@@ -16,7 +16,11 @@ from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
 # -------------------- CONFIGURAÇÃO DE LOGGING --------------------
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 # -------------------- INICIALIZAÇÃO DA APLICAÇÃO --------------------
 app = FastAPI()
@@ -50,7 +54,6 @@ class CampaignCreationRequest(BaseModel):
     cover_photo: str                   # URL ou caminho da foto de capa
     campaign_name: str                 # Nome da campanha
     campaign_description: str          # Descrição da campanha
-    # Keywords recebidas separadamente
     keyword1: Optional[str] = None
     keyword2: Optional[str] = None
     keyword3: Optional[str] = None
@@ -59,7 +62,6 @@ class CampaignCreationRequest(BaseModel):
     end_date: str                      # Data de fim no formato "YYYYMMDD"
     price_model: str                   # "CPA" ou "CPC"
     campaign_type: str = "SEARCH"      # "SEARCH" ou "DISPLAY"
-    # Segmentação demográfica (usados se campaign_type for DISPLAY)
     audience_gender: Optional[str] = None       # Ex: "FEMALE", "MALE"
     audience_min_age: Optional[int] = None
     audience_max_age: Optional[int] = None
@@ -265,9 +267,13 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
         op = client.get_type("CampaignCriterionOperation")
         crit = op.create
         crit.campaign = campaign_resource
-        crit.device.type_ = getattr(client.enums.DeviceEnum, device.upper())
-        logging.debug(f"[create_campaign_criteria] Adicionando dispositivo: {device.upper()}")
-        operations.append(op)
+        try:
+            device_enum = getattr(client.enums.DeviceEnum, device.upper())
+            crit.device.type_ = device_enum
+            logging.debug(f"[create_campaign_criteria] Adicionando dispositivo: {device.upper()}")
+            operations.append(op)
+        except AttributeError:
+            logging.warning(f"[create_campaign_criteria] Dispositivo '{device}' não reconhecido. Ignorando.")
 
     # Para DISPLAY, adiciona demografia
     if campaign_type.upper() == "DISPLAY":
@@ -275,9 +281,13 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             op = client.get_type("CampaignCriterionOperation")
             crit = op.create
             crit.campaign = campaign_resource
-            crit.gender.type_ = getattr(client.enums.GenderTypeEnum, audience_gender.upper())
-            logging.debug(f"[create_campaign_criteria] Adicionando gênero: {audience_gender.upper()}")
-            operations.append(op)
+            try:
+                gender_enum = getattr(client.enums.GenderTypeEnum, audience_gender.upper())
+                crit.gender.type_ = gender_enum
+                logging.debug(f"[create_campaign_criteria] Adicionando gênero: {audience_gender.upper()}")
+                operations.append(op)
+            except AttributeError:
+                logging.warning(f"[create_campaign_criteria] Gênero '{audience_gender}' não reconhecido. Ignorando.")
         if audience_min_age is not None and audience_max_age is not None:
             age_op = client.get_type("CampaignCriterionOperation")
             age_crit = age_op.create
@@ -312,11 +322,12 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
 def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
-        logging.debug(f"[Endpoint] Body recebido: {json.dumps(request_data.dict(), indent=4)}")
+        logging.debug(f"[Endpoint] Início do processamento. Body recebido: {json.dumps(request_data.dict(), indent=4)}")
 
         # 1) Inicializa o cliente
         logging.debug("[Endpoint] Inicializando cliente Google Ads...")
         client = initialize_google_ads_client(request_data.refresh_token)
+        logging.debug("[Endpoint] Cliente inicializado.")
 
         # 2) Obtém customer_id
         logging.debug("[Endpoint] Obtendo contas acessíveis...")
@@ -332,9 +343,12 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
         logging.debug(f"[Endpoint] Budget convertido: {budget_micros} micros")
 
         # 4) Cria o orçamento
+        logging.debug("[Endpoint] Criando orçamento...")
         campaign_budget_resource = create_campaign_budget(client, customer_id, budget_micros)
+        logging.debug(f"[Endpoint] Orçamento criado: {campaign_budget_resource}")
 
         # 5) Cria a campanha
+        logging.debug("[Endpoint] Criando campanha...")
         campaign_resource = create_campaign(
             client,
             customer_id,
@@ -345,15 +359,21 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             request_data.price_model,
             request_data.campaign_type
         )
+        logging.debug(f"[Endpoint] Campanha criada: {campaign_resource}")
 
         # 6) Cria o grupo de anúncios
+        logging.debug("[Endpoint] Criando grupo de anúncios...")
         ad_group_resource = create_ad_group(client, customer_id, campaign_resource)
+        logging.debug(f"[Endpoint] Grupo de anúncios criado: {ad_group_resource}")
 
         # 7) Adiciona palavras-chave
         keywords_list = [request_data.keyword1, request_data.keyword2, request_data.keyword3]
+        logging.debug(f"[Endpoint] Adicionando palavras-chave: {keywords_list}")
         keywords_resources = add_keywords_to_ad_group(client, customer_id, ad_group_resource, keywords_list)
+        logging.debug(f"[Endpoint] Palavras-chave adicionadas: {keywords_resources}")
 
         # 8) Cria critérios de campanha
+        logging.debug("[Endpoint] Criando critérios de campanha...")
         criteria_resources = create_campaign_criteria(
             client,
             customer_id,
@@ -364,6 +384,7 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             request_data.audience_max_age,
             request_data.devices
         )
+        logging.debug(f"[Endpoint] Critérios de campanha criados: {criteria_resources}")
 
         # 9) Monta a resposta
         result = CampaignCreationResponse(
@@ -388,4 +409,4 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     logging.info(f"Aplicação iniciando na porta {port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="debug")
