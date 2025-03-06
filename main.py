@@ -3,7 +3,7 @@ import logging
 import json
 import uuid
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------- MIDDLEWARE PARA LOGAR O BODY --------------------
+# Middleware para logar o corpo da requisição (raw)
 @app.middleware("http")
 async def log_raw_body(request: Request, call_next):
     body_bytes = await request.body()
@@ -58,8 +58,8 @@ class CampaignCreationRequest(BaseModel):
     campaign_type: str = "SEARCH"      # "SEARCH" ou "DISPLAY"
     # Segmentação demográfica (usados se campaign_type for DISPLAY)
     audience_gender: Optional[str] = None       # Ex: "FEMALE", "MALE"
-    audience_min_age: Optional[int] = None      # Ex: 25
-    audience_max_age: Optional[int] = None      # Ex: 65
+    audience_min_age: Optional[Union[int, str]] = None      # Ex: 25 ou "25"
+    audience_max_age: Optional[Union[int, str]] = None      # Ex: 65 ou "65"
     devices: List[str] = []                       # Ex: ["DESKTOP", "MOBILE"]
 
 class CampaignCreationResponse(BaseModel):
@@ -221,7 +221,8 @@ def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str, ad_group
 
 def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource: str,
                              campaign_type: str, audience_gender: Optional[str],
-                             audience_min_age: Optional[int], audience_max_age: Optional[int],
+                             audience_min_age: Optional[Union[int, str]],
+                             audience_max_age: Optional[Union[int, str]],
                              devices: List[str]) -> List[str]:
     """
     Cria critérios de campanha.
@@ -233,11 +234,23 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 
     # Critérios para dispositivos (sempre aplicados)
     if devices:
+        # Mapeamento de dispositivos: converte termos comuns para os valores esperados pela API
+        device_mapping = {
+            "SMARTPHONE": "MOBILE",
+            "DESKTOP": "DESKTOP",
+            "TABLET": "TABLET",
+            "MOBILE": "MOBILE"
+        }
         for device in devices:
+            device_upper = device.strip().upper()
+            if not device_upper or device_upper not in device_mapping:
+                logging.warning(f"Dispositivo '{device}' não reconhecido e será ignorado.")
+                continue
+            mapped_device = device_mapping[device_upper]
             device_operation = client.get_type("CampaignCriterionOperation")
             device_criterion = device_operation.create
             device_criterion.campaign = campaign_resource
-            device_criterion.device.type_ = getattr(client.enums.DeviceEnum, device.upper())
+            device_criterion.device.type_ = getattr(client.enums.DeviceEnum, mapped_device)
             operations.append(device_operation)
 
     if campaign_type.upper() == "DISPLAY":
@@ -248,14 +261,23 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             gender_criterion.gender.type_ = getattr(client.enums.GenderTypeEnum, audience_gender.upper())
             operations.append(gender_operation)
         if audience_min_age is not None and audience_max_age is not None:
+            # Se os valores forem strings, tenta convertê-los para int
+            try:
+                min_age = int(audience_min_age)
+                max_age = int(audience_max_age)
+            except Exception as e:
+                logging.error(f"Erro ao converter idades: {e}")
+                raise HTTPException(status_code=400, detail="Valores de audience_min_age e audience_max_age devem ser numéricos.")
             age_operation = client.get_type("CampaignCriterionOperation")
             age_criterion = age_operation.create
             age_criterion.campaign = campaign_resource
-            age_range_str = combine_age_ranges(audience_min_age, audience_max_age)
-            age_criterion.age_range.type_ = getattr(client.enums.AgeRangeTypeEnum, age_range_str.upper(), None)
-            if age_criterion.age_range.type_ is None:
-                logging.warning(f"Formato de faixa etária '{age_range_str}' não reconhecido pelo enum.")
-            operations.append(age_operation)
+            age_range_str = combine_age_ranges(min_age, max_age)
+            age_enum = getattr(client.enums.AgeRangeTypeEnum, age_range_str.upper(), None)
+            if age_enum is None:
+                logging.warning(f"Formato de faixa etária '{age_range_str}' não reconhecido pelo enum. Esse critério será ignorado.")
+            else:
+                age_criterion.age_range.type_ = age_enum
+                operations.append(age_operation)
 
     try:
         response = campaign_criterion_service.mutate_campaign_criteria(
@@ -270,7 +292,7 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
 def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
-        # Log do corpo recebido para depuração
+        # Log do body recebido para depuração
         logging.debug(f"Body recebido: {json.dumps(request_data.dict(), indent=4)}")
         logging.debug("Recebida requisição para criação de campanha.")
         client = initialize_google_ads_client(request_data.refresh_token)
