@@ -12,20 +12,21 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# Credenciais e constantes para o Google Ads
+# Credenciais e constantes para o Google Ads API
 DEVELOPER_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
 CLIENT_ID = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
 CLIENT_SECRET = "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"
 REDIRECT_URI = "https://app.adstock.ai/dashboard"
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v9/customers:listAccessibleCustomers"
+# Atualizado para versão v13 do endpoint
+CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v13/customers:listAccessibleCustomers"
 
 app = FastAPI(title="Google Ads Campaign API", version="1.0")
 
-# Configuração do middleware CORS para tratar requisições OPTIONS (preflight)
+# Middleware para CORS, permitindo que métodos OPTIONS sejam tratados
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # Ajuste conforme necessário para restringir origens
+    allow_origins=["*"],  # Ajuste para restringir origens se necessário
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,7 +102,8 @@ def create_google_ads_campaign(customer_id: str, campaign_data: dict, access_tok
     Essa função simula a criação de campanha via Google Ads API.
     """
     logging.debug("Iniciando create_google_ads_campaign para customer_id: %s com campaign_data: %s", customer_id, campaign_data)
-    campaign_endpoint = f"https://googleads.googleapis.com/v9/customers/{customer_id}/campaigns:mutate"
+    # Atualizado para a versão v13
+    campaign_endpoint = f"https://googleads.googleapis.com/v13/customers/{customer_id}/campaigns:mutate"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "developer-token": DEVELOPER_TOKEN,
@@ -114,11 +116,11 @@ def create_google_ads_campaign(customer_id: str, campaign_data: dict, access_tok
                 "create": {
                     "name": f"Campanha - {campaign_data.get('keyword2', 'SemNome')}",
                     "status": "ENABLED",  # A campanha será criada ativa
-                    "campaignBudget": f"customers/{customer_id}/campaignBudgets/INSERT_BUDGET_ID",  # ID de orçamento deve ser criado previamente
+                    "campaignBudget": f"customers/{customer_id}/campaignBudgets/INSERT_BUDGET_ID",
                     "advertisingChannelType": campaign_data.get("campaign_type", "SEARCH"),
                     "startDate": campaign_data.get("start_date"),
                     "endDate": campaign_data.get("end_date"),
-                    "manualCpc": {},  # Exemplo de estratégia de lances
+                    "manualCpc": {},
                     "networkSettings": {
                         "targetGoogleSearch": True,
                         "targetSearchNetwork": True,
