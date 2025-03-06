@@ -77,7 +77,7 @@ def initialize_google_ads_client(refresh_token: str) -> GoogleAdsClient:
         "use_proto_plus": True,
     }
     try:
-        client = GoogleAdsClient.load_from_dict(config, version="v19")
+        client = GoogleAdsClient.load_from_dict(config, version="v13")
         logging.info("GoogleAdsClient inicializado com sucesso.")
         return client
     except Exception as e:
