@@ -18,8 +18,9 @@ CLIENT_ID = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleuserconten
 CLIENT_SECRET = "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"
 REDIRECT_URI = "https://app.adstock.ai/dashboard"
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-# Atualizado para versão v13 do endpoint
-CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v13/customers:listAccessibleCustomers"
+
+# Atualizado para a versão v14 da API do Google Ads
+CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v14/customers:listAccessibleCustomers"
 
 app = FastAPI(title="Google Ads Campaign API", version="1.0")
 
@@ -102,8 +103,8 @@ def create_google_ads_campaign(customer_id: str, campaign_data: dict, access_tok
     Essa função simula a criação de campanha via Google Ads API.
     """
     logging.debug("Iniciando create_google_ads_campaign para customer_id: %s com campaign_data: %s", customer_id, campaign_data)
-    # Atualizado para a versão v13
-    campaign_endpoint = f"https://googleads.googleapis.com/v13/customers/{customer_id}/campaigns:mutate"
+    # Atualizado para a versão v14 da API do Google Ads
+    campaign_endpoint = f"https://googleads.googleapis.com/v14/customers/{customer_id}/campaigns:mutate"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "developer-token": DEVELOPER_TOKEN,
