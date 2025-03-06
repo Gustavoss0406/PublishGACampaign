@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import uuid
+import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -39,8 +40,6 @@ async def log_request_and_response(request: Request, call_next):
     logging.debug(f"Raw request body: {body_str}")
     
     response = await call_next(request)
-    
-    # Loga o status code da resposta
     logging.debug(f"Response status code: {response.status_code}")
     return response
 
@@ -280,7 +279,7 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 
 # -------------------- ENDPOINT DA API --------------------
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
-def create_campaign_endpoint(request_data: CampaignCreationRequest):
+async def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
         # Log do body recebido para depuração
         logging.debug(f"Body recebido: {json.dumps(request_data.dict(), indent=4)}")
@@ -294,8 +293,10 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
 
         budget_micros = convert_budget_to_micros(request_data.budget)
 
-        campaign_budget_resource = create_campaign_budget(client, customer_id, budget_micros)
-        campaign_resource = create_campaign(
+        # Executa as funções de forma assíncrona, onde possível.
+        campaign_budget_resource = await asyncio.to_thread(create_campaign_budget, client, customer_id, budget_micros)
+        campaign_resource = await asyncio.to_thread(
+            create_campaign,
             client,
             customer_id,
             campaign_budget_resource,
@@ -305,10 +306,11 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             request_data.price_model,
             request_data.campaign_type
         )
-        ad_group_resource = create_ad_group(client, customer_id, campaign_resource)
+        ad_group_resource = await asyncio.to_thread(create_ad_group, client, customer_id, campaign_resource)
         keywords_list = [request_data.keyword1, request_data.keyword2, request_data.keyword3]
-        keywords_resources = add_keywords_to_ad_group(client, customer_id, ad_group_resource, keywords_list)
-        criteria_resources = create_campaign_criteria(
+        keywords_future = asyncio.to_thread(add_keywords_to_ad_group, client, customer_id, ad_group_resource, keywords_list)
+        criteria_future = asyncio.to_thread(
+            create_campaign_criteria,
             client,
             customer_id,
             campaign_resource,
@@ -318,6 +320,7 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             request_data.audience_max_age,
             request_data.devices
         )
+        keywords_resources, criteria_resources = await asyncio.gather(keywords_future, criteria_future)
 
         result = CampaignCreationResponse(
             customer_id=customer_id,
