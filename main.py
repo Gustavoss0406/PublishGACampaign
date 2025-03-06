@@ -238,6 +238,7 @@ def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str,
             criterion.keyword.text = kw
             criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
             operations.append(operation)
+
     try:
         start = time.time()
         response = ad_group_criterion_service.mutate_ad_group_criteria(
@@ -259,7 +260,7 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
 
-    # Adiciona dispositivos (sempre aplicados)
+    # Dispositivos (sempre aplicados)
     for device in devices:
         op = client.get_type("CampaignCriterionOperation")
         crit = op.create
@@ -268,7 +269,7 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
         logging.debug(f"[create_campaign_criteria] Adicionando dispositivo: {device.upper()}")
         operations.append(op)
 
-    # Se DISPLAY, adiciona critérios demográficos
+    # Para DISPLAY, adiciona demografia
     if campaign_type.upper() == "DISPLAY":
         if audience_gender:
             op = client.get_type("CampaignCriterionOperation")
@@ -277,7 +278,6 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             crit.gender.type_ = getattr(client.enums.GenderTypeEnum, audience_gender.upper())
             logging.debug(f"[create_campaign_criteria] Adicionando gênero: {audience_gender.upper()}")
             operations.append(op)
-
         if audience_min_age is not None and audience_max_age is not None:
             age_op = client.get_type("CampaignCriterionOperation")
             age_crit = age_op.create
@@ -329,6 +329,7 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
         # 3) Converte o budget
         logging.debug(f"[Endpoint] Convertendo budget: {request_data.budget}")
         budget_micros = convert_budget_to_micros(request_data.budget)
+        logging.debug(f"[Endpoint] Budget convertido: {budget_micros} micros")
 
         # 4) Cria o orçamento
         campaign_budget_resource = create_campaign_budget(client, customer_id, budget_micros)
