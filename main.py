@@ -19,7 +19,7 @@ CLIENT_SECRET = "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"
 REDIRECT_URI = "https://app.adstock.ai/dashboard"
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
-# Atualizado para a versão v14 da API do Google Ads
+# Usando a versão v14 da API
 CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v14/customers:listAccessibleCustomers"
 
 app = FastAPI(title="Google Ads Campaign API", version="1.0")
@@ -81,8 +81,9 @@ def get_customer_id(access_token: str) -> str:
         "developer-token": DEVELOPER_TOKEN,
         "Content-Type": "application/json"
     }
-    logging.debug("Enviando requisição GET para %s com headers: %s", CUSTOMERS_LIST_URL, headers)
-    response = requests.get(CUSTOMERS_LIST_URL, headers=headers)
+    # Usamos POST (com payload vazio) em vez de GET para esse método
+    logging.debug("Enviando requisição POST para %s com headers: %s", CUSTOMERS_LIST_URL, headers)
+    response = requests.post(CUSTOMERS_LIST_URL, headers=headers, json={})
     logging.debug("Resposta da listagem de customers: %s", response.text)
     if response.status_code != 200:
         logging.error("Erro ao obter lista de customers: %s", response.text)
@@ -91,7 +92,7 @@ def get_customer_id(access_token: str) -> str:
     if not resource_names:
         logging.error("Nenhuma conta de cliente encontrada.")
         raise HTTPException(status_code=500, detail="Nenhuma conta de cliente encontrada")
-    # O formato é "customers/{customer_id}" - extraímos o customer_id
+    # O formato é "customers/{customer_id}" – extraímos o customer_id
     first_customer = resource_names[0]
     customer_id = first_customer.split("/")[-1]
     logging.debug("Customer ID selecionado: %s", customer_id)
@@ -103,14 +104,12 @@ def create_google_ads_campaign(customer_id: str, campaign_data: dict, access_tok
     Essa função simula a criação de campanha via Google Ads API.
     """
     logging.debug("Iniciando create_google_ads_campaign para customer_id: %s com campaign_data: %s", customer_id, campaign_data)
-    # Atualizado para a versão v14 da API do Google Ads
     campaign_endpoint = f"https://googleads.googleapis.com/v14/customers/{customer_id}/campaigns:mutate"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "developer-token": DEVELOPER_TOKEN,
         "Content-Type": "application/json"
     }
-    # Montagem do payload de criação da campanha (exemplo simplificado)
     campaign_operation = {
         "operations": [
             {
@@ -146,18 +145,14 @@ async def create_campaign_endpoint(campaign_request: CampaignRequest):
     try:
         # Obter token de acesso utilizando o refresh token
         access_token = get_access_token(campaign_request.refresh_token)
-        
         # Obter o customer ID a partir do token de acesso
         customer_id = get_customer_id(access_token)
-        
         # Preparar os dados da campanha (removendo o refresh_token)
         campaign_data = campaign_request.dict()
         campaign_data.pop("refresh_token", None)
-        
         # Criar a campanha no Google Ads
         campaign_response = create_google_ads_campaign(customer_id, campaign_data, access_token)
         logging.debug("Campanha criada com sucesso: %s", campaign_response)
-        
         return {
             "message": "Campanha criada com sucesso",
             "campaign_response": campaign_response
