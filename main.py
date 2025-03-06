@@ -1,11 +1,14 @@
+import os
 import logging
 import requests
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import List
 
 # Configuração de logs detalhados
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(message)s'
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
 # Credenciais e constantes para o Google Ads
@@ -16,7 +19,21 @@ REDIRECT_URI = "https://app.adstock.ai/dashboard"
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v9/customers:listAccessibleCustomers"
 
-app = Flask(__name__)
+app = FastAPI(title="Google Ads Campaign API", version="1.0")
+
+class CampaignRequest(BaseModel):
+    keyword2: str = Field(..., example="segundakeyword")
+    keyword3: str = Field(..., example="terceirakeyword")
+    budget: str = Field(..., example="budget_micros")
+    start_date: str = Field(..., example="2025-03-06")
+    end_date: str = Field(..., example="2025-04-06")
+    price_model: str = Field(..., example="price_model")
+    campaign_type: str = Field(..., example="SEARCH")
+    audience_gender: str = Field(..., example="audience_gender")
+    audience_min_age: str = Field(..., example="min_age")
+    audience_max_age: str = Field(..., example="max_age")
+    devices: List[str] = Field(..., example=["mobile", "desktop"])
+    refresh_token: str = Field(..., example="your_refresh_token_here")
 
 def get_access_token(refresh_token: str) -> str:
     """
@@ -34,11 +51,11 @@ def get_access_token(refresh_token: str) -> str:
     logging.debug("Resposta do token: %s", response.text)
     if response.status_code != 200:
         logging.error("Erro ao obter token de acesso: %s", response.text)
-        raise Exception("Erro ao obter token de acesso")
+        raise HTTPException(status_code=500, detail="Erro ao obter token de acesso")
     access_token = response.json().get("access_token")
     if not access_token:
         logging.error("Token de acesso não encontrado na resposta: %s", response.text)
-        raise Exception("Token de acesso não encontrado")
+        raise HTTPException(status_code=500, detail="Token de acesso não encontrado")
     logging.debug("Token de acesso obtido: %s", access_token)
     return access_token
 
@@ -57,11 +74,11 @@ def get_customer_id(access_token: str) -> str:
     logging.debug("Resposta da listagem de customers: %s", response.text)
     if response.status_code != 200:
         logging.error("Erro ao obter lista de customers: %s", response.text)
-        raise Exception("Erro ao obter lista de customers")
+        raise HTTPException(status_code=500, detail="Erro ao obter lista de customers")
     resource_names = response.json().get("resourceNames", [])
     if not resource_names:
         logging.error("Nenhuma conta de cliente encontrada.")
-        raise Exception("Nenhuma conta de cliente encontrada")
+        raise HTTPException(status_code=500, detail="Nenhuma conta de cliente encontrada")
     # O formato é "customers/{customer_id}" - extraímos o customer_id
     first_customer = resource_names[0]
     customer_id = first_customer.split("/")[-1]
@@ -98,7 +115,6 @@ def create_google_ads_campaign(customer_id: str, campaign_data: dict, access_tok
                         "targetContentNetwork": True,
                         "targetPartnerSearchNetwork": False
                     }
-                    # Outras configurações podem ser adicionadas conforme necessário.
                 }
             }
         ]
@@ -108,66 +124,37 @@ def create_google_ads_campaign(customer_id: str, campaign_data: dict, access_tok
     logging.debug("Resposta da criação da campanha: %s", response.text)
     if response.status_code not in (200, 201):
         logging.error("Erro ao criar campanha: %s", response.text)
-        raise Exception("Erro ao criar campanha")
+        raise HTTPException(status_code=500, detail="Erro ao criar campanha")
     return response.json()
 
-@app.route('/create_campaign', methods=['POST'])
-def create_campaign():
-    logging.debug("Requisição recebida em /create_campaign")
+@app.post("/create_campaign")
+async def create_campaign_endpoint(campaign_request: CampaignRequest):
+    logging.debug("Requisição recebida em /create_campaign com body: %s", campaign_request.dict())
     try:
-        data = request.get_json()
-        logging.debug("Dados recebidos no body: %s", data)
+        # Obter token de acesso utilizando o refresh token
+        access_token = get_access_token(campaign_request.refresh_token)
         
-        # Validação dos campos obrigatórios
-        campos_obrigatorios = [
-            "keyword2", "keyword3", "budget", "start_date", "end_date",
-            "price_model", "campaign_type", "audience_gender",
-            "audience_min_age", "audience_max_age", "devices", "refresh_token"
-        ]
-        campos_faltantes = [campo for campo in campos_obrigatorios if campo not in data]
-        if campos_faltantes:
-            logging.error("Campos obrigatórios ausentes: %s", campos_faltantes)
-            return jsonify({"error": f"Campos obrigatórios ausentes: {campos_faltantes}"}), 400
-        
-        # Extraindo o refresh_token do body
-        refresh_token = data.get("refresh_token")
-        logging.debug("Refresh token extraído: %s", refresh_token)
-        
-        # Obtendo o token de acesso usando o refresh token
-        access_token = get_access_token(refresh_token)
-        
-        # Obtendo o customer ID a partir do token de acesso
+        # Obter o customer ID a partir do token de acesso
         customer_id = get_customer_id(access_token)
         
-        # Preparando os dados da campanha
-        campaign_data = {
-            "keyword2": data.get("keyword2"),
-            "keyword3": data.get("keyword3"),
-            "budget": data.get("budget"),
-            "start_date": data.get("start_date"),
-            "end_date": data.get("end_date"),
-            "price_model": data.get("price_model"),
-            "campaign_type": data.get("campaign_type"),
-            "audience_gender": data.get("audience_gender"),
-            "audience_min_age": data.get("audience_min_age"),
-            "audience_max_age": data.get("audience_max_age"),
-            "devices": data.get("devices")
-        }
-        logging.debug("Dados da campanha preparados: %s", campaign_data)
+        # Preparar os dados da campanha (removendo o refresh_token)
+        campaign_data = campaign_request.dict()
+        campaign_data.pop("refresh_token", None)
         
-        # Criando a campanha no Google Ads
+        # Criar a campanha no Google Ads
         campaign_response = create_google_ads_campaign(customer_id, campaign_data, access_token)
         logging.debug("Campanha criada com sucesso: %s", campaign_response)
         
-        return jsonify({
+        return {
             "message": "Campanha criada com sucesso",
             "campaign_response": campaign_response
-        }), 201
-        
+        }
     except Exception as e:
         logging.exception("Erro durante o processo de criação da campanha")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-if __name__ == '__main__':
-    logging.debug("Iniciando a API Flask")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    logging.debug("Iniciando a API FastAPI na porta %s", port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
