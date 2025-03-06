@@ -28,6 +28,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -------------------- MIDDLEWARE PARA LOGAR O BODY --------------------
+@app.middleware("http")
+async def log_raw_body(request: Request, call_next):
+    body_bytes = await request.body()
+    try:
+        body_str = body_bytes.decode("utf-8")
+    except Exception:
+        body_str = str(body_bytes)
+    logging.debug(f"Raw request body: {body_str}")
+    response = await call_next(request)
+    return response
+
 # -------------------- MODELOS --------------------
 class CampaignCreationRequest(BaseModel):
     refresh_token: str
@@ -258,7 +270,7 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
 def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
-        # Imprime o corpo recebido para depuração
+        # Log do corpo recebido para depuração
         logging.debug(f"Body recebido: {json.dumps(request_data.dict(), indent=4)}")
         logging.debug("Recebida requisição para criação de campanha.")
         client = initialize_google_ads_client(request_data.refresh_token)
