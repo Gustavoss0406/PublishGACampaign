@@ -3,11 +3,11 @@ import logging
 import json
 import uuid
 from datetime import datetime, timedelta
-from typing import List, Optional, Union
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import uvicorn
 
 # Google Ads
@@ -58,9 +58,15 @@ class CampaignCreationRequest(BaseModel):
     campaign_type: str = "SEARCH"      # "SEARCH" ou "DISPLAY"
     # Segmentação demográfica (usados se campaign_type for DISPLAY)
     audience_gender: Optional[str] = None       # Ex: "FEMALE", "MALE"
-    audience_min_age: Optional[Union[int, str]] = None      # Ex: 25 ou "25"
-    audience_max_age: Optional[Union[int, str]] = None      # Ex: 65 ou "65"
+    audience_min_age: Optional[int] = None      # Agora forçado a int
+    audience_max_age: Optional[int] = None      # Agora forçado a int
     devices: List[str] = []                       # Ex: ["DESKTOP", "MOBILE"]
+
+    @validator("devices", pre=True, always=True)
+    def filter_empty_devices(cls, v):
+        if isinstance(v, list):
+            return [item for item in v if item and item.strip()]
+        return v
 
 class CampaignCreationResponse(BaseModel):
     customer_id: str
@@ -140,9 +146,9 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
             customer_id=customer_id, operations=[campaign_budget_operation]
         )
         return response.results[0].resource_name
-    except GoogleAdsException as ex:
-        logging.error(f"Erro ao criar o orçamento da campanha: {ex.failure}")
-        raise HTTPException(status_code=500, detail=f"Erro ao criar o orçamento da campanha: {ex.failure}")
+    except Exception as ex:
+        logging.error(f"Erro ao criar o orçamento da campanha: {ex}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar o orçamento da campanha: {ex}")
 
 def create_campaign(client: GoogleAdsClient, customer_id: str, campaign_budget_resource: str,
                     campaign_name: str, start_date: str, end_date: str, price_model: str,
@@ -163,7 +169,7 @@ def create_campaign(client: GoogleAdsClient, customer_id: str, campaign_budget_r
     campaign.end_date = end_date
 
     if price_model.upper() == "CPA":
-        campaign.target_cpa.target_cpa_micros = 1_000_000  # exemplo de valor alvo
+        campaign.target_cpa.target_cpa_micros = 1_000_000  # exemplo
         campaign.bidding_strategy_type = client.enums.BiddingStrategyTypeEnum.TARGET_CPA
     else:
         campaign.manual_cpc.enhanced_cpc_enabled = False
@@ -174,9 +180,9 @@ def create_campaign(client: GoogleAdsClient, customer_id: str, campaign_budget_r
             customer_id=customer_id, operations=[campaign_operation]
         )
         return response.results[0].resource_name
-    except GoogleAdsException as ex:
-        logging.error(f"Erro ao criar a campanha: {ex.failure}")
-        raise HTTPException(status_code=500, detail=f"Erro ao criar a campanha: {ex.failure}")
+    except Exception as ex:
+        logging.error(f"Erro ao criar a campanha: {ex}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar a campanha: {ex}")
 
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource: str) -> str:
     ad_group_service = client.get_service("AdGroupService")
@@ -193,9 +199,9 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
             customer_id=customer_id, operations=[ad_group_operation]
         )
         return response.results[0].resource_name
-    except GoogleAdsException as ex:
-        logging.error(f"Erro ao criar o grupo de anúncios: {ex.failure}")
-        raise HTTPException(status_code=500, detail=f"Erro ao criar o grupo de anúncios: {ex.failure}")
+    except Exception as ex:
+        logging.error(f"Erro ao criar o grupo de anúncios: {ex}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar o grupo de anúncios: {ex}")
 
 def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str, ad_group_resource: str,
                              keywords: List[str]) -> List[str]:
@@ -215,14 +221,13 @@ def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str, ad_group
             customer_id=customer_id, operations=operations
         )
         return [result.resource_name for result in response.results]
-    except GoogleAdsException as ex:
-        logging.error(f"Erro ao adicionar palavras-chave: {ex.failure}")
-        raise HTTPException(status_code=500, detail=f"Erro ao adicionar palavras-chave: {ex.failure}")
+    except Exception as ex:
+        logging.error(f"Erro ao adicionar palavras-chave: {ex}")
+        raise HTTPException(status_code=500, detail=f"Erro ao adicionar palavras-chave: {ex}")
 
 def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource: str,
                              campaign_type: str, audience_gender: Optional[str],
-                             audience_min_age: Optional[Union[int, str]],
-                             audience_max_age: Optional[Union[int, str]],
+                             audience_min_age: Optional[int], audience_max_age: Optional[int],
                              devices: List[str]) -> List[str]:
     """
     Cria critérios de campanha.
@@ -234,23 +239,11 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 
     # Critérios para dispositivos (sempre aplicados)
     if devices:
-        # Mapeamento de dispositivos: converte termos comuns para os valores esperados pela API
-        device_mapping = {
-            "SMARTPHONE": "MOBILE",
-            "DESKTOP": "DESKTOP",
-            "TABLET": "TABLET",
-            "MOBILE": "MOBILE"
-        }
         for device in devices:
-            device_upper = device.strip().upper()
-            if not device_upper or device_upper not in device_mapping:
-                logging.warning(f"Dispositivo '{device}' não reconhecido e será ignorado.")
-                continue
-            mapped_device = device_mapping[device_upper]
             device_operation = client.get_type("CampaignCriterionOperation")
             device_criterion = device_operation.create
             device_criterion.campaign = campaign_resource
-            device_criterion.device.type_ = getattr(client.enums.DeviceEnum, mapped_device)
+            device_criterion.device.type_ = getattr(client.enums.DeviceEnum, device.upper())
             operations.append(device_operation)
 
     if campaign_type.upper() == "DISPLAY":
@@ -261,17 +254,10 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             gender_criterion.gender.type_ = getattr(client.enums.GenderTypeEnum, audience_gender.upper())
             operations.append(gender_operation)
         if audience_min_age is not None and audience_max_age is not None:
-            # Se os valores forem strings, tenta convertê-los para int
-            try:
-                min_age = int(audience_min_age)
-                max_age = int(audience_max_age)
-            except Exception as e:
-                logging.error(f"Erro ao converter idades: {e}")
-                raise HTTPException(status_code=400, detail="Valores de audience_min_age e audience_max_age devem ser numéricos.")
             age_operation = client.get_type("CampaignCriterionOperation")
             age_criterion = age_operation.create
             age_criterion.campaign = campaign_resource
-            age_range_str = combine_age_ranges(min_age, max_age)
+            age_range_str = combine_age_ranges(audience_min_age, audience_max_age)
             age_enum = getattr(client.enums.AgeRangeTypeEnum, age_range_str.upper(), None)
             if age_enum is None:
                 logging.warning(f"Formato de faixa etária '{age_range_str}' não reconhecido pelo enum. Esse critério será ignorado.")
@@ -284,9 +270,9 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             customer_id=customer_id, operations=operations
         )
         return [result.resource_name for result in response.results]
-    except GoogleAdsException as ex:
-        logging.error(f"Erro ao criar critérios de campanha: {ex.failure}")
-        raise HTTPException(status_code=500, detail=f"Erro ao criar critérios de campanha: {ex.failure}")
+    except Exception as ex:
+        logging.error(f"Erro ao criar critérios de campanha: {ex}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar critérios de campanha: {ex}")
 
 # -------------------- ENDPOINT DA API --------------------
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
