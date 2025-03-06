@@ -34,19 +34,20 @@ class CampaignCreationRequest(BaseModel):
     objective: str                     # Ex: "Leads", "Vendas", "Alcance de marca", "Trafego em site"
     cover_photo: str                   # URL ou caminho da foto de capa
     campaign_name: str                 # Nome da campanha
-    traffic_destination: str           # URL ou número de celular para tráfego
     campaign_description: str          # Descrição da campanha
-    keywords: List[str]                # Lista de palavras-chave
-    budget_micros: int                 # Budget em micros (ex: 5000000 para 5 USD)
+    # Agora, keywords são campos separados
+    keyword1: Optional[str] = None
+    keyword2: Optional[str] = None
+    keyword3: Optional[str] = None
+    budget: str                        # Recebido no formato "$100"
     start_date: str                    # Data de início no formato "YYYYMMDD"
     end_date: str                      # Data de fim no formato "YYYYMMDD"
     price_model: str                   # "CPA" ou "CPC"
     campaign_type: str = "SEARCH"      # "SEARCH" ou "DISPLAY"
     # Campos de segmentação demográfica (usados se campaign_type for DISPLAY)
     audience_gender: Optional[str] = None       # Ex: "FEMALE", "MALE", etc.
-    audience_age_range: Optional[str] = None      # Ex: "AGE_RANGE_25_34", "AGE_RANGE_18_24", etc.
-    audience_income_range: Optional[str] = None   # Ex: "INCOME_RANGE_50_100", "INCOME_RANGE_HIGH", etc.
-    devices: List[str] = []                       # Ex: ["DESKTOP", "MOBILE", "TABLET"]
+    audience_min_age: Optional[int] = None      # Ex: 25
+    audience_max_age: Optional[int] = None      # Ex: 65
 
 class CampaignCreationResponse(BaseModel):
     customer_id: str
@@ -57,7 +58,6 @@ class CampaignCreationResponse(BaseModel):
     criteria_resources: List[str]
     objective: str
     cover_photo: str
-    traffic_destination: str
     campaign_description: str
 
 # -------------------- CONFIGURAÇÕES FIXAS --------------------
@@ -95,6 +95,27 @@ def get_accessible_customers(client: GoogleAdsClient) -> List[str]:
     except Exception as e:
         logging.error(f"Erro ao obter contas acessíveis: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao obter contas acessíveis: {e}")
+
+def convert_budget_to_micros(budget_str: str) -> int:
+    """
+    Remove o cifrão e converte o valor para micros.
+    Ex: "$100" -> 100 * 1_000_000 = 100000000
+    """
+    try:
+        # Remove o cifrão e espaços
+        numeric_str = budget_str.replace("$", "").strip()
+        budget_value = float(numeric_str)
+        return int(budget_value * 1_000_000)
+    except Exception as e:
+        logging.error(f"Erro ao converter o budget: {e}")
+        raise HTTPException(status_code=400, detail=f"Erro ao converter o budget: {e}")
+
+def combine_age_ranges(min_age: int, max_age: int) -> str:
+    """
+    Combina os valores de idade mínima e máxima no formato correto.
+    Ex: 25 e 65 -> "AGE_RANGE_25_65"
+    """
+    return f"AGE_RANGE_{min_age}_{max_age}"
 
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
     campaign_budget_service = client.get_service("CampaignBudgetService")
@@ -172,13 +193,14 @@ def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str, ad_group
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
     operations = []
     for kw in keywords:
-        operation = client.get_type("AdGroupCriterionOperation")
-        criterion = operation.create
-        criterion.ad_group = ad_group_resource
-        criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
-        criterion.keyword.text = kw
-        criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
-        operations.append(operation)
+        if kw:  # ignora keywords vazias
+            operation = client.get_type("AdGroupCriterionOperation")
+            criterion = operation.create
+            criterion.ad_group = ad_group_resource
+            criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
+            criterion.keyword.text = kw
+            criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
+            operations.append(operation)
     try:
         response = ad_group_criterion_service.mutate_ad_group_criteria(
             customer_id=customer_id, operations=operations
@@ -190,8 +212,7 @@ def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str, ad_group
 
 def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource: str,
                              campaign_type: str, audience_gender: Optional[str],
-                             audience_age_range: Optional[str],
-                             audience_income_range: Optional[str],
+                             audience_min_age: Optional[int], audience_max_age: Optional[int],
                              devices: List[str]) -> List[str]:
     """
     Cria critérios de campanha.
@@ -217,18 +238,16 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             gender_criterion.campaign = campaign_resource
             gender_criterion.gender.type_ = getattr(client.enums.GenderTypeEnum, audience_gender.upper())
             operations.append(gender_operation)
-        if audience_age_range:
+        if audience_min_age is not None and audience_max_age is not None:
             age_operation = client.get_type("CampaignCriterionOperation")
             age_criterion = age_operation.create
             age_criterion.campaign = campaign_resource
-            age_criterion.age_range.type_ = getattr(client.enums.AgeRangeTypeEnum, audience_age_range.upper())
+            # Converte as idades para o formato esperado: "AGE_RANGE_{min}_{max}"
+            age_range_str = combine_age_ranges(audience_min_age, audience_max_age)
+            age_criterion.age_range.type_ = getattr(client.enums.AgeRangeTypeEnum, age_range_str.upper(), None)
+            if age_criterion.age_range.type_ is None:
+                logging.warning(f"Formato de faixa etária '{age_range_str}' não reconhecido pelo enum.")
             operations.append(age_operation)
-        if audience_income_range:
-            income_operation = client.get_type("CampaignCriterionOperation")
-            income_criterion = income_operation.create
-            income_criterion.campaign = campaign_resource
-            income_criterion.income_range.type_ = getattr(client.enums.IncomeRangeTypeEnum, audience_income_range.upper())
-            operations.append(income_operation)
 
     try:
         response = campaign_criterion_service.mutate_campaign_criteria(
@@ -250,7 +269,10 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             raise HTTPException(status_code=500, detail="Nenhuma conta acessível encontrada.")
         customer_id = customers[0]
 
-        campaign_budget_resource = create_campaign_budget(client, customer_id, request_data.budget_micros)
+        # Converte o budget recebido (ex: "$100") para micros
+        budget_micros = convert_budget_to_micros(request_data.budget)
+
+        campaign_budget_resource = create_campaign_budget(client, customer_id, budget_micros)
         campaign_resource = create_campaign(
             client,
             customer_id,
@@ -262,15 +284,17 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             request_data.campaign_type
         )
         ad_group_resource = create_ad_group(client, customer_id, campaign_resource)
-        keywords_resources = add_keywords_to_ad_group(client, customer_id, ad_group_resource, request_data.keywords)
+        # Constrói a lista de keywords a partir dos campos individuais
+        keywords_list = [request_data.keyword1, request_data.keyword2, request_data.keyword3]
+        keywords_resources = add_keywords_to_ad_group(client, customer_id, ad_group_resource, keywords_list)
         criteria_resources = create_campaign_criteria(
             client,
             customer_id,
             campaign_resource,
             request_data.campaign_type,
             request_data.audience_gender,
-            request_data.audience_age_range,
-            request_data.audience_income_range,
+            request_data.audience_min_age,
+            request_data.audience_max_age,
             request_data.devices
         )
 
@@ -283,7 +307,6 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             criteria_resources=criteria_resources,
             objective=request_data.objective,
             cover_photo=request_data.cover_photo,
-            traffic_destination=request_data.traffic_destination,
             campaign_description=request_data.campaign_description
         )
         logging.info(f"Campanha criada com sucesso: {json.dumps(result.dict(), ensure_ascii=False)}")
