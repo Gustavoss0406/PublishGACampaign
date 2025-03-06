@@ -28,16 +28,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware para logar o corpo da requisição (raw)
+# Middleware para logar o corpo da requisição (raw) e o status code da resposta
 @app.middleware("http")
-async def log_raw_body(request: Request, call_next):
+async def log_request_and_response(request: Request, call_next):
     body_bytes = await request.body()
     try:
         body_str = body_bytes.decode("utf-8")
     except Exception:
         body_str = str(body_bytes)
     logging.debug(f"Raw request body: {body_str}")
+    
     response = await call_next(request)
+    
+    # Loga o status code da resposta
+    logging.debug(f"Response status code: {response.status_code}")
     return response
 
 # -------------------- MODELOS --------------------
@@ -169,7 +173,7 @@ def create_campaign(client: GoogleAdsClient, customer_id: str, campaign_budget_r
     campaign.end_date = end_date
 
     if price_model.upper() == "CPA":
-        campaign.target_cpa.target_cpa_micros = 1_000_000  # exemplo
+        campaign.target_cpa.target_cpa_micros = 1_000_000  # exemplo de valor alvo
         campaign.bidding_strategy_type = client.enums.BiddingStrategyTypeEnum.TARGET_CPA
     else:
         campaign.manual_cpc.enhanced_cpc_enabled = False
