@@ -256,15 +256,17 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 
 # -------------------- ENDPOINT DA API --------------------
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
+@app.post("/create_campaign", response_model=CampaignCreationResponse)
 def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
+        # Imprime o body recebido para depuração
+        logging.debug(f"Body recebido: {json.dumps(request_data.dict(), indent=4)}")
+        
         logging.debug("Recebida requisição para criação de campanha.")
         client = initialize_google_ads_client(request_data.refresh_token)
-        # Obtém a lista de contas acessíveis usando o refresh token.
         customers = get_accessible_customers(client)
         if not customers:
             raise HTTPException(status_code=500, detail="Nenhuma conta acessível encontrada.")
-        # Seleciona a primeira conta encontrada.
         customer_id = customers[0]
 
         budget_micros = convert_budget_to_micros(request_data.budget)
