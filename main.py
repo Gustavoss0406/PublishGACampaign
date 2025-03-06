@@ -35,7 +35,7 @@ class CampaignCreationRequest(BaseModel):
     cover_photo: str                   # URL ou caminho da foto de capa
     campaign_name: str                 # Nome da campanha
     campaign_description: str          # Descrição da campanha
-    # Agora, keywords são campos separados
+    # Keywords recebidas separadamente
     keyword1: Optional[str] = None
     keyword2: Optional[str] = None
     keyword3: Optional[str] = None
@@ -44,10 +44,11 @@ class CampaignCreationRequest(BaseModel):
     end_date: str                      # Data de fim no formato "YYYYMMDD"
     price_model: str                   # "CPA" ou "CPC"
     campaign_type: str = "SEARCH"      # "SEARCH" ou "DISPLAY"
-    # Campos de segmentação demográfica (usados se campaign_type for DISPLAY)
-    audience_gender: Optional[str] = None       # Ex: "FEMALE", "MALE", etc.
+    # Segmentação demográfica (usados se campaign_type for DISPLAY)
+    audience_gender: Optional[str] = None       # Ex: "FEMALE", "MALE"
     audience_min_age: Optional[int] = None      # Ex: 25
     audience_max_age: Optional[int] = None      # Ex: 65
+    devices: List[str] = []                       # Ex: ["DESKTOP", "MOBILE"]
 
 class CampaignCreationResponse(BaseModel):
     customer_id: str
@@ -77,7 +78,8 @@ def initialize_google_ads_client(refresh_token: str) -> GoogleAdsClient:
         "use_proto_plus": True,
     }
     try:
-        client = GoogleAdsClient.load_from_dict(config, version="v13")
+        # Usando a versão v12, que é suportada no seu ambiente
+        client = GoogleAdsClient.load_from_dict(config, version="v12")
         logging.info("GoogleAdsClient inicializado com sucesso.")
         return client
     except Exception as e:
@@ -85,7 +87,7 @@ def initialize_google_ads_client(refresh_token: str) -> GoogleAdsClient:
         raise HTTPException(status_code=500, detail=f"Erro na inicialização do GoogleAdsClient: {e}")
 
 def get_accessible_customers(client: GoogleAdsClient) -> List[str]:
-    logging.debug("Obtendo contas acessíveis...")
+    logging.debug("Obtendo contas acessíveis via refresh token...")
     try:
         customer_service = client.get_service("CustomerService")
         accessible_customers = customer_service.list_accessible_customers()
@@ -102,7 +104,6 @@ def convert_budget_to_micros(budget_str: str) -> int:
     Ex: "$100" -> 100 * 1_000_000 = 100000000
     """
     try:
-        # Remove o cifrão e espaços
         numeric_str = budget_str.replace("$", "").strip()
         budget_value = float(numeric_str)
         return int(budget_value * 1_000_000)
@@ -111,10 +112,6 @@ def convert_budget_to_micros(budget_str: str) -> int:
         raise HTTPException(status_code=400, detail=f"Erro ao converter o budget: {e}")
 
 def combine_age_ranges(min_age: int, max_age: int) -> str:
-    """
-    Combina os valores de idade mínima e máxima no formato correto.
-    Ex: 25 e 65 -> "AGE_RANGE_25_65"
-    """
     return f"AGE_RANGE_{min_age}_{max_age}"
 
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
@@ -193,7 +190,7 @@ def add_keywords_to_ad_group(client: GoogleAdsClient, customer_id: str, ad_group
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
     operations = []
     for kw in keywords:
-        if kw:  # ignora keywords vazias
+        if kw:
             operation = client.get_type("AdGroupCriterionOperation")
             criterion = operation.create
             criterion.ad_group = ad_group_resource
@@ -216,8 +213,8 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
                              devices: List[str]) -> List[str]:
     """
     Cria critérios de campanha.
-    Para campanhas SEARCH, serão aplicados apenas critérios de dispositivos.
-    Para DISPLAY, se informados, serão adicionados também os critérios demográficos.
+    Para SEARCH, aplica apenas critérios de dispositivos.
+    Para DISPLAY, adiciona também os critérios demográficos se informados.
     """
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
@@ -242,7 +239,6 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
             age_operation = client.get_type("CampaignCriterionOperation")
             age_criterion = age_operation.create
             age_criterion.campaign = campaign_resource
-            # Converte as idades para o formato esperado: "AGE_RANGE_{min}_{max}"
             age_range_str = combine_age_ranges(audience_min_age, audience_max_age)
             age_criterion.age_range.type_ = getattr(client.enums.AgeRangeTypeEnum, age_range_str.upper(), None)
             if age_criterion.age_range.type_ is None:
@@ -264,12 +260,13 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
         logging.debug("Recebida requisição para criação de campanha.")
         client = initialize_google_ads_client(request_data.refresh_token)
+        # Obtém a lista de contas acessíveis usando o refresh token.
         customers = get_accessible_customers(client)
         if not customers:
             raise HTTPException(status_code=500, detail="Nenhuma conta acessível encontrada.")
+        # Seleciona a primeira conta encontrada.
         customer_id = customers[0]
 
-        # Converte o budget recebido (ex: "$100") para micros
         budget_micros = convert_budget_to_micros(request_data.budget)
 
         campaign_budget_resource = create_campaign_budget(client, customer_id, budget_micros)
@@ -284,7 +281,6 @@ def create_campaign_endpoint(request_data: CampaignCreationRequest):
             request_data.campaign_type
         )
         ad_group_resource = create_ad_group(client, customer_id, campaign_resource)
-        # Constrói a lista de keywords a partir dos campos individuais
         keywords_list = [request_data.keyword1, request_data.keyword2, request_data.keyword3]
         keywords_resources = add_keywords_to_ad_group(client, customer_id, ad_group_resource, keywords_list)
         criteria_resources = create_campaign_criteria(
