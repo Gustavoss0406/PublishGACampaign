@@ -78,7 +78,7 @@ def initialize_google_ads_client(refresh_token: str) -> GoogleAdsClient:
         "use_proto_plus": True,
     }
     try:
-        # Usando a versão v12, que é suportada no seu ambiente
+        # Usando a versão v12, conforme suportada no seu ambiente
         client = GoogleAdsClient.load_from_dict(config, version="v12")
         logging.info("GoogleAdsClient inicializado com sucesso.")
         return client
@@ -256,17 +256,16 @@ def create_campaign_criteria(client: GoogleAdsClient, customer_id: str, campaign
 
 # -------------------- ENDPOINT DA API --------------------
 @app.post("/create_campaign", response_model=CampaignCreationResponse)
-@app.post("/create_campaign", response_model=CampaignCreationResponse)
 def create_campaign_endpoint(request_data: CampaignCreationRequest):
     try:
-        # Imprime o body recebido para depuração
+        # Imprime o corpo recebido para depuração
         logging.debug(f"Body recebido: {json.dumps(request_data.dict(), indent=4)}")
-        
         logging.debug("Recebida requisição para criação de campanha.")
         client = initialize_google_ads_client(request_data.refresh_token)
         customers = get_accessible_customers(client)
         if not customers:
             raise HTTPException(status_code=500, detail="Nenhuma conta acessível encontrada.")
+        # Seleciona a primeira conta disponível
         customer_id = customers[0]
 
         budget_micros = convert_budget_to_micros(request_data.budget)
