@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -20,6 +21,15 @@ OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 CUSTOMERS_LIST_URL = "https://googleads.googleapis.com/v9/customers:listAccessibleCustomers"
 
 app = FastAPI(title="Google Ads Campaign API", version="1.0")
+
+# Configuração do middleware CORS para tratar requisições OPTIONS (preflight)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],            # Ajuste conforme necessário para restringir origens
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class CampaignRequest(BaseModel):
     keyword2: str = Field(..., example="segundakeyword")
