@@ -100,7 +100,8 @@ class CampaignRequest(BaseModel):
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     logging.info("Endpoint /create_campaign acionado.")
-    logging.debug(f"Dados recebidos (pós-validação): {request_data.json()}")
+    # Utiliza model_dump_json() em vez de json()
+    logging.debug(f"Dados recebidos (pós-validação): {request_data.model_dump_json()}")
 
     try:
         # Configuração do Google Ads Client utilizando o refresh token do usuário
@@ -205,13 +206,14 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
 
     # Configuração da estratégia de lance com base no price_model
     if request_data.price_model.upper() == "CPC":
-        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc"))
+        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc")())
         logging.debug("Estratégia de lance configurada: Manual CPC.")
     elif request_data.price_model.upper() == "CPM":
-        campaign.manual_cpm.CopyFrom(client.get_type("ManualCpm"))
+        campaign.manual_cpm.CopyFrom(client.get_type("ManualCpm")())
         logging.debug("Estratégia de lance configurada: Manual CPM.")
     else:
-        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc"))
+        # Fallback para Manual CPC para modelos não tratados (ex: CPA)
+        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc")())
         logging.debug("Estratégia de lance padrão (Manual CPC) aplicada.")
 
     logging.info("Configurações básicas da campanha definidas. Enviando criação via API.")
