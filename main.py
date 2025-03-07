@@ -206,14 +206,14 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
 
     # Configuração da estratégia de lance com base no price_model
     if request_data.price_model.upper() == "CPC":
-        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc")())
+        campaign.manual_cpc = client.get_type("ManualCpc")()
         logging.debug("Estratégia de lance configurada: Manual CPC.")
     elif request_data.price_model.upper() == "CPM":
-        campaign.manual_cpm.CopyFrom(client.get_type("ManualCpm")())
+        campaign.manual_cpm = client.get_type("ManualCpm")()
         logging.debug("Estratégia de lance configurada: Manual CPM.")
     else:
         # Fallback para Manual CPC para modelos não tratados (ex: CPA)
-        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc")())
+        campaign.manual_cpc = client.get_type("ManualCpc")()
         logging.debug("Estratégia de lance padrão (Manual CPC) aplicada.")
 
     logging.info("Configurações básicas da campanha definidas. Enviando criação via API.")
