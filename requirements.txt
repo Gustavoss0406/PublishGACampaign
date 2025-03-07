@@ -1,3 +1,4 @@
 fastapi
 uvicorn
 google-ads
+pydantic>=2.0
