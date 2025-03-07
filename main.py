@@ -205,6 +205,7 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
     logging.info("Criando Display Keywords no Ad Group.")
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
     operations = []
+    
     def make_keyword_op(keyword_text: str):
         op = client.get_type("AdGroupCriterionOperation")
         criterion = op.create
@@ -213,9 +214,11 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         criterion.keyword.text = keyword_text
         criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
         return op
+    
     for kw in [data.keyword1, data.keyword2, data.keyword3]:
         if kw:
             operations.append(make_keyword_op(kw))
+    
     if operations:
         response = ad_group_criterion_service.mutate_ad_group_criteria(
             customer_id=customer_id, operations=operations
@@ -234,41 +237,44 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad = ad_group_ad.ad
     ad.final_urls.append("https://example.com")  # URL de destino – ajuste conforme necessário
 
-    # Headlines: usando keyword1, keyword2 e keyword3
-    headline1 = client.get_type("AdTextAsset")()
+    # Headlines: utilizando os dados do JSON; observe que removemos os parênteses para criar os assets
+    headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
     ad.responsive_display_ad.headlines.append(headline1)
-    headline2 = client.get_type("AdTextAsset")()
+
+    headline2 = client.get_type("AdTextAsset")
     headline2.text = data.keyword2
     ad.responsive_display_ad.headlines.append(headline2)
-    headline3 = client.get_type("AdTextAsset")()
+
+    headline3 = client.get_type("AdTextAsset")
     headline3.text = data.keyword3
     ad.responsive_display_ad.headlines.append(headline3)
 
     # Descrições: usando campaign_description e objective
-    desc1 = client.get_type("AdTextAsset")()
+    desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
-    desc2 = client.get_type("AdTextAsset")()
+
+    desc2 = client.get_type("AdTextAsset")
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
 
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
 
-    # Marketing image: utiliza cover_photo; se vazio, lança exceção
+    # Marketing image: utiliza cover_photo; se estiver vazio, lança exceção
     if data.cover_photo:
-        img = client.get_type("AdImageAsset")()
+        img = client.get_type("AdImageAsset")
         img.asset = data.cover_photo
         ad.responsive_display_ad.marketing_images.append(img)
     else:
         raise Exception("O campo 'cover_photo' deve conter o resource name de um asset de imagem válido.")
 
-    # Logo: utiliza um asset definido via variável de ambiente
+    # Logo: utiliza asset definido via variável de ambiente
     default_logo = os.environ.get("DEFAULT_LOGO_ASSET")
     if not default_logo:
         raise Exception("Variável de ambiente DEFAULT_LOGO_ASSET não definida.")
-    logo = client.get_type("AdImageAsset")()
+    logo = client.get_type("AdImageAsset")
     logo.asset = default_logo
     ad.responsive_display_ad.logo_images.append(logo)
 
@@ -284,6 +290,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
+    # Gênero
     gender_mapping = {
         "MALE": client.enums.GenderTypeEnum.MALE,
         "FEMALE": client.enums.GenderTypeEnum.FEMALE
@@ -296,6 +303,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.gender.type_ = gender
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
+    # Idade – exemplo simplificado para faixa 18-24 se aplicável
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
@@ -303,6 +311,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
+    # Dispositivos
     device_mapping = {
         "SMARTPHONE": client.enums.DeviceEnum.MOBILE,
         "DESKTOP": client.enums.DeviceEnum.DESKTOP,
