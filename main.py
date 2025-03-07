@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
@@ -48,7 +48,7 @@ async def log_requests(request: Request, call_next):
         body_text = str(body_bytes)
     logging.info(f"Request body: {body_text}")
 
-    # Reatribui a função _receive para que o corpo esteja disponível para o endpoint
+    # Reatribui a função _receive para que o body esteja disponível para o endpoint
     async def receive():
         return {"type": "http.request", "body": body_bytes}
     request._receive = receive
@@ -57,12 +57,12 @@ async def log_requests(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para o corpo da requisição
+# Modelo de dados para o corpo da requisição, com suporte a campos extras e validadores
 class CampaignRequest(BaseModel):
     refresh_token: str
     keyword2: str
     keyword3: str
-    budget: int  # valor em micros
+    budget: int  # valor em micros (será convertido)
     start_date: str  # formato YYYYMMDD
     end_date: str    # formato YYYYMMDD
     price_model: str
@@ -72,10 +72,35 @@ class CampaignRequest(BaseModel):
     audience_max_age: int
     devices: list[str]  # exemplo: ["mobile", "desktop"]
 
+    class Config:
+        extra = "allow"  # Permite campos extras que serão ignorados
+
+    @validator("budget", pre=True)
+    def convert_budget(cls, value):
+        if isinstance(value, str):
+            # Remove o símbolo "$" se presente e converte para float
+            value = value.replace("$", "").strip()
+            try:
+                numeric_value = float(value)
+            except Exception as e:
+                raise ValueError("Formato inválido para budget. Exemplo esperado: '$100'")
+            # Converte o valor para micros (multiplicando por 1e6)
+            return int(numeric_value * 1_000_000)
+        return value
+
+    @validator("audience_min_age", "audience_max_age", pre=True)
+    def convert_age(cls, value):
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except Exception as e:
+                raise ValueError("Idade deve ser um número inteiro.")
+        return value
+
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     logging.info("Endpoint /create_campaign acionado.")
-    logging.debug(f"Dados recebidos: {request_data.json()}")
+    logging.debug(f"Dados recebidos (pós-validação): {request_data.json()}")
 
     try:
         # Configuração do Google Ads Client utilizando o refresh token do usuário
