@@ -16,7 +16,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Handler de lifespan (Pydantic V2 style para validators está sendo usado no modelo abaixo)
+# Handler de lifespan via asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("Startup: A aplicação foi iniciada (via lifespan handler).")
@@ -28,37 +28,34 @@ app = FastAPI(lifespan=lifespan)
 # Middleware CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme necessário
+    allow_origins=["*"],  # Ajuste conforme sua política de segurança
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Middleware para logar o body da requisição
+# Middleware para logar detalhes da requisição (método, URL, headers e body)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
     logging.debug(f"Request headers: {request.headers}")
-
     body_bytes = await request.body()
     try:
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
     logging.info(f"Request body: {body_text}")
-
     async def receive():
         return {"type": "http.request", "body": body_bytes}
     request._receive = receive
-
     response = await call_next(request)
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados – mapeia os campos do JSON recebido
+# Modelo de dados mapeando os campos do JSON recebido; permite campos extras.
 class CampaignRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")  # Permite campos extras
-
+    model_config = ConfigDict(extra="allow")
+    
     refresh_token: str
     campaign_name: str
     campaign_description: str
@@ -67,7 +64,7 @@ class CampaignRequest(BaseModel):
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # valor em micros (converteremos se for string tipo "$100")
+    budget: int  # valor em micros (converteremos se for string, ex: "$100")
     start_date: str  # formato YYYYMMDD
     end_date: str    # formato YYYYMMDD
     price_model: str
@@ -91,13 +88,12 @@ class CampaignRequest(BaseModel):
             return int(value)
         return value
 
-# Endpoint que cria todos os recursos com base no JSON recebido
+# Endpoint que cria a campanha completa (campanha, ad group, anúncio, targeting e keywords)
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     logging.info("Endpoint /create_campaign acionado.")
     logging.debug(f"Dados recebidos (pós-validação): {request_data.model_dump_json()}")
 
-    # Configuração do Google Ads Client
     try:
         config_dict = {
             "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
@@ -112,7 +108,7 @@ async def create_campaign(request_data: CampaignRequest):
     except Exception as e:
         logging.error("Erro ao inicializar Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-
+        
     try:
         customer_id = get_customer_id(client)
         logging.info(f"Customer ID obtido: {customer_id}")
@@ -122,8 +118,6 @@ async def create_campaign(request_data: CampaignRequest):
         ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
         create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
         ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
-
-        # Aplicar targeting (gênero, idade e dispositivos)
         apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
 
         return {
@@ -139,7 +133,7 @@ async def create_campaign(request_data: CampaignRequest):
         logging.exception("Erro inesperado.")
         raise HTTPException(status_code=500, detail=str(ex))
 
-# Função para obter o customer_id
+# Função para obter o customer ID
 def get_customer_id(client: GoogleAdsClient) -> str:
     customer_service = client.get_service("CustomerService")
     accessible_customers = customer_service.list_accessible_customers()
@@ -148,6 +142,7 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     resource_name = accessible_customers.resource_names[0]
     return resource_name.split("/")[-1]
 
+# Cria o Campaign Budget
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
     logging.info("Criando Campaign Budget.")
     campaign_budget_service = client.get_service("CampaignBudgetService")
@@ -156,7 +151,6 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     campaign_budget.name = f"Budget_{uuid.uuid4()}"
     campaign_budget.amount_micros = budget_micros
     campaign_budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
-
     response = campaign_budget_service.mutate_campaign_budgets(
         customer_id=customer_id, operations=[campaign_budget_operation]
     )
@@ -164,27 +158,23 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
+# Cria a Campaign
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
-
     campaign.name = data.campaign_name
-    # Configura o tipo da campanha – neste exemplo, usamos DISPLAY se informado
     if data.campaign_type.upper() == "DISPLAY":
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
     else:
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
-
     campaign.status = client.enums.CampaignStatusEnum.ENABLED
     campaign.campaign_budget = budget_resource_name
     campaign.start_date = data.start_date
     campaign.end_date = data.end_date
-
-    # Estratégia de lance: mesmo que o JSON venha como CPA, usaremos ManualCpc para este exemplo
+    # Mesmo que o price_model seja CPA, usamos fallback para Manual CPC neste exemplo.
     campaign.manual_cpc = client.get_type("ManualCpc")
-
     response = campaign_service.mutate_campaigns(
         customer_id=customer_id, operations=[campaign_operation]
     )
@@ -192,6 +182,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     logging.info(f"Campaign criado: {resource_name}")
     return resource_name
 
+# Cria o Ad Group
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Ad Group.")
     ad_group_service = client.get_service("AdGroupService")
@@ -201,8 +192,7 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     ad_group.campaign = campaign_resource_name
     ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
     ad_group.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
-    ad_group.cpc_bid_micros = 1_000_000  # Lance de US$1.00 em micros
-
+    ad_group.cpc_bid_micros = 1_000_000  # Lance de US$1.00
     response = ad_group_service.mutate_ad_groups(
         customer_id=customer_id, operations=[ad_group_operation]
     )
@@ -210,11 +200,11 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     logging.info(f"Ad Group criado: {resource_name}")
     return resource_name
 
+# Cria as Keywords (Ad Group Criterion) para Display
 def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest):
     logging.info("Criando Display Keywords no Ad Group.")
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
     operations = []
-    
     def make_keyword_op(keyword_text: str):
         op = client.get_type("AdGroupCriterionOperation")
         criterion = op.create
@@ -223,11 +213,9 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         criterion.keyword.text = keyword_text
         criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
         return op
-
     for kw in [data.keyword1, data.keyword2, data.keyword3]:
         if kw:
             operations.append(make_keyword_op(kw))
-    
     if operations:
         response = ad_group_criterion_service.mutate_ad_group_criteria(
             customer_id=customer_id, operations=operations
@@ -235,49 +223,54 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         for result in response.results:
             logging.info(f"Ad Group Criterion criado: {result.resource_name}")
 
+# Cria o Responsive Display Ad usando os dados do JSON
 def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Responsive Display Ad.")
     ad_group_ad_service = client.get_service("AdGroupAdService")
     ad_group_ad_operation = client.get_type("AdGroupAdOperation")
     ad_group_ad = ad_group_ad_operation.create
-
     ad_group_ad.ad_group = ad_group_resource_name
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
-
     ad = ad_group_ad.ad
     ad.final_urls.append("https://example.com")  # URL de destino – ajuste conforme necessário
 
-    # Configurar o anúncio responsivo de Display com dados do JSON
-    # Headlines – usando keywords e campaign_name
-    headline1 = ad.responsive_display_ad.headlines.add()
+    # Headlines: usando keyword1, keyword2 e keyword3
+    headline1 = client.get_type("AdTextAsset")()
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
-    headline2 = ad.responsive_display_ad.headlines.add()
+    ad.responsive_display_ad.headlines.append(headline1)
+    headline2 = client.get_type("AdTextAsset")()
     headline2.text = data.keyword2
-    headline3 = ad.responsive_display_ad.headlines.add()
+    ad.responsive_display_ad.headlines.append(headline2)
+    headline3 = client.get_type("AdTextAsset")()
     headline3.text = data.keyword3
+    ad.responsive_display_ad.headlines.append(headline3)
 
-    # Descrições – usando campaign_description e objective
-    desc1 = ad.responsive_display_ad.descriptions.add()
+    # Descrições: usando campaign_description e objective
+    desc1 = client.get_type("AdTextAsset")()
     desc1.text = data.campaign_description
-    desc2 = ad.responsive_display_ad.descriptions.add()
+    ad.responsive_display_ad.descriptions.append(desc1)
+    desc2 = client.get_type("AdTextAsset")()
     desc2.text = data.objective
+    ad.responsive_display_ad.descriptions.append(desc2)
 
-    # Business name – usaremos campaign_name ou outro valor
+    # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
 
-    # Marketing image – usa o cover_photo do JSON; se estiver vazio, lança exceção
+    # Marketing image: utiliza cover_photo; se vazio, lança exceção
     if data.cover_photo:
-        img = ad.responsive_display_ad.marketing_images.add()
+        img = client.get_type("AdImageAsset")()
         img.asset = data.cover_photo
+        ad.responsive_display_ad.marketing_images.append(img)
     else:
         raise Exception("O campo 'cover_photo' deve conter o resource name de um asset de imagem válido.")
 
-    # Logo – usar asset definido via variável de ambiente (obrigatório para ad de display)
+    # Logo: utiliza um asset definido via variável de ambiente
     default_logo = os.environ.get("DEFAULT_LOGO_ASSET")
     if not default_logo:
         raise Exception("Variável de ambiente DEFAULT_LOGO_ASSET não definida.")
-    logo = ad.responsive_display_ad.logo_images.add()
+    logo = client.get_type("AdImageAsset")()
     logo.asset = default_logo
+    ad.responsive_display_ad.logo_images.append(logo)
 
     response = ad_group_ad_service.mutate_ad_group_ads(
         customer_id=customer_id, operations=[ad_group_ad_operation]
@@ -286,15 +279,11 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
+# Aplica critérios de targeting à campanha (gênero, idade e dispositivos)
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
-    """
-    Aplica critérios de segmentação à campanha (gênero, faixa etária e dispositivos).
-    """
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
-
-    # Segmentação por gênero: mapeia "Male" ou "Female"
     gender_mapping = {
         "MALE": client.enums.GenderTypeEnum.MALE,
         "FEMALE": client.enums.GenderTypeEnum.FEMALE
@@ -307,9 +296,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.gender.type_ = gender
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-
-    # Segmentação por idade: Para simplificar, criaremos dois critérios: "AGE_RANGE_18_24" se a faixa incluir esse intervalo
-    # No mundo real, você teria que mapear os intervalos fornecidos para os valores aceitos pela API.
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
@@ -317,9 +303,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Você pode adicionar outros intervalos conforme necessário...
-
-    # Segmentação por dispositivo: mapeia "Smartphone" para MOBILE, "Desktop" para DESKTOP, etc.
     device_mapping = {
         "SMARTPHONE": client.enums.DeviceEnum.MOBILE,
         "DESKTOP": client.enums.DeviceEnum.DESKTOP,
@@ -334,7 +317,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
             criterion.device.type_ = device_mapping[d_upper]
             criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
             operations.append(op)
-
     if operations:
         response = campaign_criterion_service.mutate_campaign_criteria(
             customer_id=customer_id, operations=operations
