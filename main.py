@@ -1,147 +1,147 @@
-import os
-import sys
 import logging
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from typing import List
-import yaml
-
-# Importa o client library oficial do Google Ads e erros
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
-# Configuração de logs detalhados
+# Configuração das credenciais do Google Ads
+DEVELOPER_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
+CLIENT_ID = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
+CLIENT_SECRET = "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"
+REDIRECT_URI = "https://app.adstock.ai/dashboard"
+
+# Configuração dos logs (quanto mais detalhados, melhor para debug)
 logging.basicConfig(
     level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-app = FastAPI(title="Google Ads Campaign API", version="1.0")
+app = FastAPI()
 
-# Configuração do middleware CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme necessário
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Modelo de request com os campos necessários
+# Modelo do corpo da requisição
 class CampaignRequest(BaseModel):
-    keyword2: str = Field(..., example="segundakeyword")
-    keyword3: str = Field(..., example="terceirakeyword")
-    budget: str = Field(..., example="budget_micros")
-    start_date: str = Field(..., example="2025-03-06")
-    end_date: str = Field(..., example="2025-04-06")
-    price_model: str = Field(..., example="price_model")
-    campaign_type: str = Field(..., example="SEARCH")
-    audience_gender: str = Field(..., example="audience_gender")
-    audience_min_age: str = Field(..., example="min_age")
-    audience_max_age: str = Field(..., example="max_age")
-    devices: List[str] = Field(..., example=["mobile", "desktop"])
-    refresh_token: str = Field(..., example="your_refresh_token_here")
+    refresh_token: str
+    keyword2: str
+    keyword3: str
+    budget: int           # valor em micros (budget_micros)
+    start_date: str       # no formato "YYYYMMDD"
+    end_date: str         # no formato "YYYYMMDD"
+    price_model: str
+    campaign_type: str
+    audience_gender: str
+    audience_min_age: int
+    audience_max_age: int
+    devices: List[str]
 
-def get_google_ads_client(refresh_token: str) -> GoogleAdsClient:
+def get_googleads_client(refresh_token: str) -> GoogleAdsClient:
     """
-    Carrega as configurações do arquivo google-ads.yaml, sobrescreve o refresh token e retorna o GoogleAdsClient.
+    Cria o cliente do Google Ads a partir do refresh token e das credenciais.
     """
+    config = {
+        "developer_token": DEVELOPER_TOKEN,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "use_proto_plus": True,
+    }
+    logging.debug("Criando cliente Google Ads com a seguinte configuração: %s", config)
     try:
-        config_path = os.path.join(os.getcwd(), "google-ads.yaml")
-        with open(config_path, "r") as f:
-            config_data = yaml.safe_load(f)
-        # Sobrescreve o refresh token com o informado na requisição
-        config_data["refresh_token"] = refresh_token
-        client = GoogleAdsClient.load_from_dict(config_data)
-        logging.debug("Google Ads Client criado com sucesso.")
+        client = GoogleAdsClient.load_from_dict(config)
+        logging.debug("Cliente Google Ads criado com sucesso.")
         return client
     except Exception as e:
-        logging.error("Erro ao carregar google-ads.yaml: %s", str(e))
-        raise HTTPException(status_code=500, detail="Erro ao configurar o Google Ads Client")
+        logging.error("Erro ao criar o cliente Google Ads: %s", e)
+        raise
 
-def list_accessible_customers(client: GoogleAdsClient) -> str:
+def get_customer_id(googleads_client: GoogleAdsClient) -> str:
     """
-    Utiliza o CustomerService para listar os customers acessíveis e retorna o ID do primeiro.
+    Recupera o Customer ID utilizando o serviço CustomerService do Google Ads.
     """
+    logging.debug("Recuperando Customer ID a partir do refresh token.")
     try:
-        customer_service = client.get_service("CustomerService")
+        customer_service = googleads_client.get_service("CustomerService")
         response = customer_service.list_accessible_customers()
-        logging.debug("Customer resource names: %s", response.resource_names)
+        logging.debug("Resposta do list_accessible_customers: %s", response)
         if not response.resource_names:
-            raise Exception("Nenhum customer encontrado.")
-        first_customer = response.resource_names[0]  # Formato: "customers/{customer_id}"
-        customer_id = first_customer.split("/")[-1]
-        logging.debug("Customer ID selecionado: %s", customer_id)
+            raise Exception("Nenhum Customer acessível foi encontrado.")
+        # O resource name tem o formato "customers/{customer_id}"
+        customer_id = response.resource_names[0].split("/")[-1]
+        logging.info("Customer ID obtido: %s", customer_id)
         return customer_id
-    except GoogleAdsException as ex:
-        logging.error("Google Ads API Exception ao listar customers: %s", ex)
-        raise HTTPException(status_code=500, detail="Erro ao listar customers")
     except Exception as e:
-        logging.error("Erro inesperado ao listar customers: %s", str(e))
-        raise HTTPException(status_code=500, detail="Erro inesperado ao listar customers")
+        logging.error("Erro ao recuperar o Customer ID: %s", e)
+        raise
 
-def create_campaign(client: GoogleAdsClient, customer_id: str, campaign_data: dict) -> dict:
+def create_campaign(googleads_client: GoogleAdsClient, customer_id: str, request_data: CampaignRequest) -> str:
     """
-    Cria uma campanha utilizando o CampaignService.
-    OBS: Essa é uma implementação simplificada. A criação real de uma campanha
-    exige a criação de um orçamento e outras configurações.
+    Cria o orçamento e a campanha no Google Ads.
+    A campanha será criada com status ENABLED (ativa).
     """
+    logging.debug("Iniciando a criação da campanha para o Customer ID: %s", customer_id)
+    
+    # Criação do Orçamento da Campanha
     try:
-        campaign_service = client.get_service("CampaignService")
-        # Cria a operação para a campanha
-        campaign_operation = client.get_type("CampaignOperation")
-        campaign = campaign_operation.create
-
-        # Define os campos mínimos para a campanha
-        campaign.name = f"Campanha - {campaign_data.get('keyword2', 'SemNome')}"
-        # Define o tipo de canal de publicidade; aqui usamos SEARCH como exemplo
-        campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
-        # As datas devem estar no formato YYYYMMDD
-        campaign.start_date = campaign_data.get("start_date").replace("-", "")
-        campaign.end_date = campaign_data.get("end_date").replace("-", "")
-        # Campo obrigatório: campanha deve ter um orçamento (ID de orçamento já criado)
-        campaign.campaign_budget = f"customers/{customer_id}/campaignBudgets/INSERT_BUDGET_ID"
-        # Ativa a campanha
-        campaign.status = client.enums.CampaignStatusEnum.ENABLED
-
-        # Outras configurações (como estratégia de lances, segmentação) podem ser adicionadas aqui
-
-        # Envia a operação de mutação para criar a campanha
-        response = campaign_service.mutate_campaigns(customer_id=customer_id, operations=[campaign_operation])
-        logging.debug("Resposta da criação da campanha: %s", response)
-        return {"resource_name": response.results[0].resource_name}
+        campaign_budget_service = googleads_client.get_service("CampaignBudgetService")
+        campaign_budget_operation = googleads_client.get_type("CampaignBudgetOperation")
+        campaign_budget = campaign_budget_operation.create
+        campaign_budget.name = f"Orçamento - {request_data.keyword2} {request_data.keyword3}"
+        campaign_budget.amount_micros = request_data.budget
+        campaign_budget.delivery_method = googleads_client.get_type("BudgetDeliveryMethodEnum").STANDARD
+        logging.debug("Orçamento configurado: %s", campaign_budget)
+        budget_response = campaign_budget_service.mutate_campaign_budgets(
+            customer_id=customer_id, operations=[campaign_budget_operation]
+        )
+        campaign_budget_resource = budget_response.results[0].resource_name
+        logging.info("Orçamento criado com sucesso: %s", campaign_budget_resource)
     except GoogleAdsException as ex:
-        logging.error("Google Ads API Exception ao criar campanha: %s", ex)
-        raise HTTPException(status_code=500, detail="Erro ao criar campanha")
+        logging.error("Erro no Google Ads ao criar o orçamento da campanha: %s", ex)
+        raise HTTPException(status_code=500, detail=f"Erro ao criar o orçamento: {ex}")
     except Exception as e:
-        logging.error("Erro inesperado ao criar campanha: %s", str(e))
-        raise HTTPException(status_code=500, detail="Erro inesperado ao criar campanha")
+        logging.error("Erro inesperado ao criar o orçamento da campanha: %s", e)
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
+    
+    # Criação da Campanha
+    try:
+        campaign_service = googleads_client.get_service("CampaignService")
+        campaign_operation = googleads_client.get_type("CampaignOperation")
+        campaign = campaign_operation.create
+        campaign.name = f"Campanha - {request_data.keyword2} {request_data.keyword3}"
+        # Exemplo: definindo o canal de publicidade com base no campaign_type recebido. Aqui, usamos SEARCH como padrão.
+        campaign.advertising_channel_type = googleads_client.get_type("AdvertisingChannelTypeEnum").SEARCH
+        # A campanha será criada ativa (ENABLED)
+        campaign.status = googleads_client.get_type("CampaignStatusEnum").ENABLED
+        campaign.campaign_budget = campaign_budget_resource
+        campaign.start_date = request_data.start_date
+        campaign.end_date = request_data.end_date
+        # Outros atributos, como price_model, audience e devices, poderiam ser configurados aqui conforme a necessidade.
+        logging.debug("Configuração final da campanha: %s", campaign)
+        campaign_response = campaign_service.mutate_campaigns(
+            customer_id=customer_id, operations=[campaign_operation]
+        )
+        campaign_resource = campaign_response.results[0].resource_name
+        logging.info("Campanha criada com sucesso: %s", campaign_resource)
+        return campaign_resource
+    except GoogleAdsException as ex:
+        logging.error("Erro no Google Ads ao criar a campanha: %s", ex)
+        raise HTTPException(status_code=500, detail=f"Erro ao criar a campanha: {ex}")
+    except Exception as e:
+        logging.error("Erro inesperado ao criar a campanha: %s", e)
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
 
 @app.post("/create_campaign")
-async def create_campaign_endpoint(campaign_request: CampaignRequest):
-    logging.debug("Requisição recebida: %s", campaign_request.dict())
+async def create_campaign_endpoint(request: CampaignRequest):
+    logging.info("Recebida requisição para criação de campanha: %s", request.json())
     try:
-        # Cria o cliente do Google Ads com o refresh token informado pelo usuário
-        client = get_google_ads_client(campaign_request.refresh_token)
-        # Obtém o customer ID a partir do método list_accessible_customers
-        customer_id = list_accessible_customers(client)
-        # Converte os dados da campanha para dicionário e remove o refresh_token
-        campaign_data = campaign_request.dict()
-        campaign_data.pop("refresh_token", None)
-        # Cria a campanha utilizando os dados informados
-        result = create_campaign(client, customer_id, campaign_data)
-        logging.debug("Campanha criada com sucesso: %s", result)
-        return {
-            "message": "Campanha criada com sucesso",
-            "campaign_result": result
-        }
+        # Cria o cliente do Google Ads utilizando o refresh token recebido
+        googleads_client = get_googleads_client(request.refresh_token)
+        # Recupera o Customer ID a partir do refresh token
+        customer_id = get_customer_id(googleads_client)
+        logging.debug("Customer ID obtido: %s", customer_id)
+        # Cria a campanha com base nos dados da requisição
+        campaign_resource = create_campaign(googleads_client, customer_id, request)
+        logging.info("Processo de criação de campanha concluído com sucesso.")
+        return {"campaign_resource": campaign_resource}
     except Exception as e:
-        logging.exception("Erro durante o processo de criação da campanha")
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    logging.debug("Iniciando a API FastAPI na porta %s", port)
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+        logging.error("Falha ao criar a campanha: %s", e)
+        raise HTTPException(status_code=500, detail=f"Falha ao criar a campanha: {e}")
