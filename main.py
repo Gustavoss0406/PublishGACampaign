@@ -16,16 +16,16 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Handler de lifespan conforme recomendado pelo FastAPI
+# Handler de lifespan sem uso de @app.on_event
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.info("Startup: A aplicação foi iniciada.")
+    logging.info("Startup: A aplicação foi iniciada (via lifespan handler).")
     yield
-    logging.info("Shutdown: A aplicação está sendo encerrada.")
+    logging.info("Shutdown: A aplicação está sendo encerrada (via lifespan handler).")
 
 app = FastAPI(lifespan=lifespan)
 
-# Configuração do CORS para tratar requisições OPTIONS e evitar problemas de preflight
+# Middleware CORS para tratar requisições OPTIONS e evitar problemas de preflight
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Ajuste conforme sua política de segurança
@@ -43,7 +43,7 @@ async def log_requests(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para o body da requisição
+# Modelo de dados para o corpo da requisição
 class CampaignRequest(BaseModel):
     refresh_token: str
     keyword2: str
@@ -162,7 +162,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign.campaign_budget = budget_resource_name
     campaign.start_date = request_data.start_date
     campaign.end_date = request_data.end_date
-    logging.debug(f"Datas da campanha: Início = {campaign.start_date} | Fim = {campaign.end_date}")
+    logging.debug(f"Datas da campanha definidas: Início = {campaign.start_date} | Fim = {campaign.end_date}")
 
     # Configuração da estratégia de lance com base no price_model
     if request_data.price_model.upper() == "CPC":
