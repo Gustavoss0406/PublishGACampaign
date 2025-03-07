@@ -1,48 +1,49 @@
 import logging
 import sys
 import uuid
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
-# Configuração de logs detalhados (DEBUG) com saída para stdout
+# Configuração detalhada dos logs (DEBUG) com saída para stdout
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-app = FastAPI()
+# Handler de lifespan conforme recomendado pelo FastAPI
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logging.info("Startup: A aplicação foi iniciada.")
+    yield
+    logging.info("Shutdown: A aplicação está sendo encerrada.")
 
-# Middleware CORS para lidar com requisições OPTIONS e evitar problemas de preflight
+app = FastAPI(lifespan=lifespan)
+
+# Configuração do CORS para tratar requisições OPTIONS e evitar problemas de preflight
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme necessário
+    allow_origins=["*"],  # Ajuste conforme sua política de segurança
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Eventos de startup e shutdown para logar início e fim da aplicação
-@app.on_event("startup")
-async def startup_event():
-    logging.info("Startup: A aplicação foi iniciada.")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logging.info("Shutdown: A aplicação está sendo encerrada.")
-
-# Middleware para logar cada requisição recebida e a resposta enviada
+# Middleware para logar detalhes de cada requisição (método, URL e headers)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
+    logging.debug(f"Request headers: {request.headers}")
     response = await call_next(request)
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo que define o corpo do request
+# Modelo de dados para o body da requisição
 class CampaignRequest(BaseModel):
     refresh_token: str
     keyword2: str
@@ -63,7 +64,7 @@ async def create_campaign(request_data: CampaignRequest):
     logging.debug(f"Dados recebidos: {request_data.json()}")
 
     try:
-        # Configuração do cliente do Google Ads com os dados fornecidos
+        # Configuração do Google Ads Client utilizando o refresh token do usuário
         config_dict = {
             "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
             "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
@@ -83,7 +84,7 @@ async def create_campaign(request_data: CampaignRequest):
         budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
         logging.info(f"Campaign budget criado: {budget_resource_name}")
 
-        # Criação da campanha com os parâmetros do request e vinculando o budget criado
+        # Criação da campanha vinculando o budget criado e os demais parâmetros
         campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
         logging.info(f"Campanha criada com sucesso: {campaign_resource_name}")
 
@@ -105,10 +106,10 @@ def get_customer_id(client: GoogleAdsClient) -> str:
         logging.error("Nenhum customer acessível encontrado.")
         raise Exception("Nenhum customer acessível foi encontrado.")
 
-    # Seleciona o primeiro customer disponível
+    # Seleciona o primeiro customer retornado e extrai o ID
     customer_resource_name = response.resource_names[0]
     customer_id = customer_resource_name.split("/")[-1]
-    logging.debug(f"Customer ID extraído: {customer_id} a partir do resource: {customer_resource_name}")
+    logging.debug(f"Customer ID extraído: {customer_id} do resource: {customer_resource_name}")
     return customer_id
 
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
@@ -129,7 +130,7 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
             customer_id=customer_id, operations=[campaign_budget_operation]
         )
         budget_resource_name = response.results[0].resource_name
-        logging.info(f"Campaign budget criado: {budget_resource_name}")
+        logging.info(f"Budget criado com sucesso: {budget_resource_name}")
         return budget_resource_name
     except GoogleAdsException as ex:
         logging.error("Erro ao criar o campaign budget.", exc_info=True)
@@ -141,7 +142,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
 
-    # Define o nome da campanha utilizando as keywords
+    # Define o nome da campanha com base nas keywords e um identificador único
     campaign.name = f"Campaign_{request_data.keyword2}_{request_data.keyword3}_{uuid.uuid4()}"
     logging.debug(f"Nome da campanha definido: {campaign.name}")
 
@@ -161,23 +162,20 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign.campaign_budget = budget_resource_name
     campaign.start_date = request_data.start_date
     campaign.end_date = request_data.end_date
-    logging.debug(f"Datas definidas para a campanha: Início = {campaign.start_date} | Fim = {campaign.end_date}")
+    logging.debug(f"Datas da campanha: Início = {campaign.start_date} | Fim = {campaign.end_date}")
 
     # Configuração da estratégia de lance com base no price_model
     if request_data.price_model.upper() == "CPC":
         campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc"))
-        logging.debug("Estratégia de lance: Manual CPC.")
+        logging.debug("Estratégia de lance configurada: Manual CPC.")
     elif request_data.price_model.upper() == "CPM":
         campaign.manual_cpm.CopyFrom(client.get_type("ManualCpm"))
-        logging.debug("Estratégia de lance: Manual CPM.")
+        logging.debug("Estratégia de lance configurada: Manual CPM.")
     else:
         campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc"))
         logging.debug("Estratégia de lance padrão (Manual CPC) aplicada.")
 
-    # Observação: Para aplicar critérios de segmentação (gênero, idade, dispositivos)
-    # é necessário criar recursos adicionais (CampaignCriterion, etc).
-    logging.info("Configurações básicas da campanha definidas. Iniciando criação via API.")
-    
+    logging.info("Configurações básicas da campanha definidas. Enviando criação via API.")
     try:
         response = campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[campaign_operation]
@@ -191,5 +189,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
 
 if __name__ == "__main__":
     import uvicorn
-    logging.info("Iniciando a aplicação com uvicorn.")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Utiliza a porta definida na variável de ambiente PORT (compatível com Railway e outras plataformas)
+    port = int(os.environ.get("PORT", 8000))
+    logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
+    uvicorn.run(app, host="0.0.0.0", port=port)
