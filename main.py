@@ -34,11 +34,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware para logar detalhes de cada requisição (método, URL e headers)
+# Middleware para logar detalhes de cada requisição (método, URL, headers e body)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
     logging.debug(f"Request headers: {request.headers}")
+
+    # Lê o corpo da requisição e faz log
+    body_bytes = await request.body()
+    try:
+        body_text = body_bytes.decode("utf-8")
+    except Exception:
+        body_text = str(body_bytes)
+    logging.info(f"Request body: {body_text}")
+
+    # Reatribui a função _receive para que o corpo esteja disponível para o endpoint
+    async def receive():
+        return {"type": "http.request", "body": body_bytes}
+    request._receive = receive
+
     response = await call_next(request)
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
