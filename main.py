@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+import requests
 
 # Configuração de logs detalhados
 logging.basicConfig(
@@ -60,7 +61,7 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # Deve ser o resource name de um asset de imagem válido
+    cover_photo: str  # Pode ser um URL; se for, o código fará o upload.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -87,6 +88,24 @@ class CampaignRequest(BaseModel):
         if isinstance(value, str):
             return int(value)
         return value
+
+# Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset
+def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
+    logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
+    response = requests.get(image_url)
+    if response.status_code != 200:
+        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
+    image_data = response.content
+    asset_service = client.get_service("AssetService")
+    asset_operation = client.get_type("AssetOperation")
+    asset = asset_operation.create
+    asset.name = f"Image asset {uuid.uuid4()}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = image_data
+    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+    resource_name = mutate_response.results[0].resource_name
+    logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
+    return resource_name
 
 # Endpoint que cria a campanha completa (campanha, ad group, anúncio, targeting e keywords)
 @app.post("/create_campaign")
@@ -237,15 +256,13 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad = ad_group_ad.ad
     ad.final_urls.append("https://example.com")  # URL de destino – ajuste conforme necessário
 
-    # Headlines: utilizando os dados do JSON; observe que removemos os parênteses para criar os assets
+    # Headlines: utilizando os dados do JSON
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
     ad.responsive_display_ad.headlines.append(headline1)
-
     headline2 = client.get_type("AdTextAsset")
     headline2.text = data.keyword2
     ad.responsive_display_ad.headlines.append(headline2)
-
     headline3 = client.get_type("AdTextAsset")
     headline3.text = data.keyword3
     ad.responsive_display_ad.headlines.append(headline3)
@@ -254,7 +271,6 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
-
     desc2 = client.get_type("AdTextAsset")
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
@@ -262,13 +278,18 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
 
-    # Marketing image: utiliza cover_photo; se estiver vazio, lança exceção
+    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, se não for vazio, assume que já é o resource name.
     if data.cover_photo:
+        if data.cover_photo.startswith("http"):
+            # Fazer upload da imagem a partir do URL
+            marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
+        else:
+            marketing_asset_resource = data.cover_photo
         img = client.get_type("AdImageAsset")
-        img.asset = data.cover_photo
+        img.asset = marketing_asset_resource
         ad.responsive_display_ad.marketing_images.append(img)
     else:
-        raise Exception("O campo 'cover_photo' deve conter o resource name de um asset de imagem válido.")
+        raise Exception("O campo 'cover_photo' está vazio. É necessário fornecer um URL ou resource name válido.")
 
     # Logo: utiliza asset definido via variável de ambiente
     default_logo = os.environ.get("DEFAULT_LOGO_ASSET")
