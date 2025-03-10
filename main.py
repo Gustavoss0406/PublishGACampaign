@@ -37,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware para logar e modificar o corpo da requisição
+# Middleware para logar e limpar o corpo da requisição
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -48,9 +48,8 @@ async def log_requests(request: Request, call_next):
     except Exception:
         body_text = str(body_bytes)
     
-    # Remover extra ponto-e-vírgula depois do valor do campo "cover_photo"
-    # Ex: "cover_photo": "https://...jpg?token=abc";,  =>  "cover_photo": "https://...jpg?token=abc",
-    body_text = re.sub(r'("cover_photo":\s*".+?)";', r'\1",', body_text)
+    # Substitui o trecho '";,' por '",'
+    body_text = body_text.replace('";,', '",')
     
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -101,7 +100,7 @@ class CampaignRequest(BaseModel):
 
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
-        # Remove espaços e ponto-e-vírgula extras à direita.
+        # Remove espaços e quaisquer pontos-e-vírgula extras à direita.
         if isinstance(value, str):
             return value.rstrip(" ;")
         return value
