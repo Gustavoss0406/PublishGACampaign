@@ -260,7 +260,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
         if not logo_asset_resource:
-            default_logo_path = "default_logo.png"
+            default_logo_path = "icon-Adstock-Vetor2.png"
             if not os.path.exists(default_logo_path):
                 raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo default_logo.png não foi encontrado.")
             with open(default_logo_path, "rb") as f:
