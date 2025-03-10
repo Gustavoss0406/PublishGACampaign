@@ -3,6 +3,7 @@ import sys
 import uuid
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
@@ -61,7 +62,9 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # Pode ser um URL; se for, o código fará o upload.
+    cover_photo: str  # Pode ser um URL ou já o resource name do asset de imagem.
+    # Novo campo opcional para logotipo:
+    logo_image: Optional[str] = ""
     keyword1: str
     keyword2: str
     keyword3: str
@@ -260,9 +263,11 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
     ad.responsive_display_ad.headlines.append(headline1)
+    
     headline2 = client.get_type("AdTextAsset")
     headline2.text = data.keyword2
     ad.responsive_display_ad.headlines.append(headline2)
+    
     headline3 = client.get_type("AdTextAsset")
     headline3.text = data.keyword3
     ad.responsive_display_ad.headlines.append(headline3)
@@ -271,6 +276,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
+    
     desc2 = client.get_type("AdTextAsset")
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
@@ -278,10 +284,9 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
 
-    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, se não for vazio, assume que já é o resource name.
+    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, assume que já é o resource name.
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
-            # Fazer upload da imagem a partir do URL
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
         else:
             marketing_asset_resource = data.cover_photo
@@ -291,12 +296,20 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio. É necessário fornecer um URL ou resource name válido.")
 
-    # Logo: utiliza asset definido via variável de ambiente
-    default_logo = os.environ.get("DEFAULT_LOGO_ASSET")
-    if not default_logo:
-        raise Exception("Variável de ambiente DEFAULT_LOGO_ASSET não definida.")
+    # Logo: se o campo logo_image for fornecido, faz o upload ou usa o valor; caso contrário, usa a variável de ambiente.
+    if data.logo_image:
+        if data.logo_image.startswith("http"):
+            logo_asset_resource = upload_image_asset(client, customer_id, data.logo_image)
+        else:
+            logo_asset_resource = data.logo_image
+    else:
+        logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
+    
+    if not logo_asset_resource:
+        raise Exception("Nenhum asset de logotipo foi fornecido e a variável de ambiente DEFAULT_LOGO_ASSET não está definida.")
+    
     logo = client.get_type("AdImageAsset")
-    logo.asset = default_logo
+    logo.asset = logo_asset_resource
     ad.responsive_display_ad.logo_images.append(logo)
 
     response = ad_group_ad_service.mutate_ad_group_ads(
