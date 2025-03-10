@@ -62,9 +62,8 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # Pode ser um URL ou já o resource name do asset de imagem.
-    # Novo campo opcional para logotipo:
-    logo_image: Optional[str] = ""
+    cover_photo: str  # Pode ser um URL ou o resource name do asset de imagem.
+    logo_image: Optional[str] = ""  # Opcional; se não enviado, tenta usar DEFAULT_LOGO_ASSET ou um arquivo local.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -109,51 +108,6 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
     resource_name = mutate_response.results[0].resource_name
     logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
     return resource_name
-
-# Endpoint que cria a campanha completa (campanha, ad group, anúncio, targeting e keywords)
-@app.post("/create_campaign")
-async def create_campaign(request_data: CampaignRequest):
-    logging.info("Endpoint /create_campaign acionado.")
-    logging.debug(f"Dados recebidos (pós-validação): {request_data.model_dump_json()}")
-
-    try:
-        config_dict = {
-            "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
-            "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
-            "client_secret": "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",
-            "refresh_token": request_data.refresh_token,
-            "use_proto_plus": True
-        }
-        logging.info("Inicializando Google Ads Client com o refresh token fornecido.")
-        client = GoogleAdsClient.load_from_dict(config_dict)
-        logging.debug("Google Ads Client inicializado com sucesso.")
-    except Exception as e:
-        logging.error("Erro ao inicializar Google Ads Client.", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
-        
-    try:
-        customer_id = get_customer_id(client)
-        logging.info(f"Customer ID obtido: {customer_id}")
-
-        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
-        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
-        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
-        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
-        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
-        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
-
-        return {
-            "status": "success",
-            "campaign_resource_name": campaign_resource_name,
-            "ad_group_resource_name": ad_group_resource_name,
-            "ad_group_ad_resource_name": ad_group_ad_resource_name
-        }
-    except GoogleAdsException as ex:
-        logging.error("Erro na API do Google Ads.", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex}")
-    except Exception as ex:
-        logging.exception("Erro inesperado.")
-        raise HTTPException(status_code=500, detail=str(ex))
 
 # Função para obter o customer ID
 def get_customer_id(client: GoogleAdsClient) -> str:
@@ -296,7 +250,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio. É necessário fornecer um URL ou resource name válido.")
 
-    # Logo: se o campo logo_image for fornecido, faz o upload ou usa o valor; caso contrário, usa a variável de ambiente.
+    # Logo: se logo_image for fornecido, usa-o (faz upload se necessário); caso contrário, tenta DEFAULT_LOGO_ASSET;
+    # se essa variável também não estiver definida, utiliza um arquivo local "default_logo.png"
     if data.logo_image:
         if data.logo_image.startswith("http"):
             logo_asset_resource = upload_image_asset(client, customer_id, data.logo_image)
@@ -304,9 +259,23 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
             logo_asset_resource = data.logo_image
     else:
         logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
-    
+        if not logo_asset_resource:
+            default_logo_path = "default_logo.png"
+            if not os.path.exists(default_logo_path):
+                raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo default_logo.png não foi encontrado.")
+            with open(default_logo_path, "rb") as f:
+                image_data = f.read()
+            asset_service = client.get_service("AssetService")
+            asset_operation = client.get_type("AssetOperation")
+            asset = asset_operation.create
+            asset.name = f"Default Logo {uuid.uuid4()}"
+            asset.type_ = client.enums.AssetTypeEnum.IMAGE
+            asset.image_asset.data = image_data
+            mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+            logo_asset_resource = mutate_response.results[0].resource_name
+
     if not logo_asset_resource:
-        raise Exception("Nenhum asset de logotipo foi fornecido e a variável de ambiente DEFAULT_LOGO_ASSET não está definida.")
+        raise Exception("Nenhum asset de logotipo foi fornecido e não foi possível obter um valor padrão.")
     
     logo = client.get_type("AdImageAsset")
     logo.asset = logo_asset_resource
