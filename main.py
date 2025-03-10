@@ -49,11 +49,8 @@ async def log_requests(request: Request, call_next):
     except Exception:
         body_text = str(body_bytes)
     
-    # Remover qualquer ocorrência de '";' antes de uma vírgula
-    body_text = re.sub(r'";\s*,', '",', body_text)
-    # Também remova espaços extras no final de qualquer valor entre aspas
-    body_text = re.sub(r'("\s*)+$', '"', body_text)
-    
+    # Tenta remover a ocorrência de '";' ao final do valor do cover_photo
+    body_text = re.sub(r'("cover_photo":\s*".+?)[;\s]+"', r'\1"', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
     
@@ -72,12 +69,12 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # Pode ser um URL ou já o resource name do asset.
+    cover_photo: str  # URL ou resource name do asset
     # Campo "logo_image" removido; será sempre utilizado o asset padrão.
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # valor em micros (se for string, ex: "$50", será convertido)
+    budget: int  # valor em micros (converteremos se for string, ex: "$50")
     start_date: str  # formato YYYYMMDD
     end_date: str    # formato YYYYMMDD
     price_model: str
@@ -104,8 +101,9 @@ class CampaignRequest(BaseModel):
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
         if isinstance(value, str):
-            cleaned = value.strip().rstrip(" ;")
-            # Se não tiver esquema, adiciona "http://"
+            # Remove espaços e qualquer ponto-e-vírgula no final da string
+            cleaned = re.sub(r'[;\s]+$', '', value.strip())
+            # Se a URL não tiver esquema, adicione "http://"
             if cleaned and not urlparse(cleaned).scheme:
                 cleaned = "http://" + cleaned
             return cleaned
@@ -257,7 +255,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
     
-    # Marketing image
+    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, assume que já é o resource name.
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
@@ -315,7 +313,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.gender.type_ = gender
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Idade (exemplo para faixa 18-24)
+    # Idade – exemplo para faixa 18-24
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
