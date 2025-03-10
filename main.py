@@ -2,6 +2,7 @@ import logging
 import sys
 import uuid
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
@@ -36,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware para logar detalhes da requisição (método, URL, headers e body)
+# Middleware para logar e modificar o corpo da requisição
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -46,9 +47,16 @@ async def log_requests(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    logging.info(f"Request body: {body_text}")
+    
+    # Remover extra ponto-e-vírgula depois do valor do campo "cover_photo"
+    # Ex: "cover_photo": "https://...jpg?token=abc";,  =>  "cover_photo": "https://...jpg?token=abc",
+    body_text = re.sub(r'("cover_photo":\s*".+?)";', r'\1",', body_text)
+    
+    logging.info(f"Request body (modificado): {body_text}")
+    modified_body_bytes = body_text.encode("utf-8")
+    
     async def receive():
-        return {"type": "http.request", "body": body_bytes}
+        return {"type": "http.request", "body": modified_body_bytes}
     request._receive = receive
     response = await call_next(request)
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
@@ -63,7 +71,7 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str  # Pode ser um URL ou o resource name do asset de imagem.
-    # Campo "logo_image" foi removido; usaremos sempre o asset padrão
+    # Campo "logo_image" removido; será usado sempre o asset padrão.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -93,7 +101,7 @@ class CampaignRequest(BaseModel):
 
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
-        # Remove espaços e pontos-e-vírgula extras à direita.
+        # Remove espaços e ponto-e-vírgula extras à direita.
         if isinstance(value, str):
             return value.rstrip(" ;")
         return value
