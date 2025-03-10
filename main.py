@@ -30,7 +30,7 @@ app = FastAPI(lifespan=lifespan)
 # Middleware CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme sua política de segurança
+    allow_origins=["*"],  # Ajuste conforme necessário
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,7 +63,7 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str  # Pode ser um URL ou o resource name do asset de imagem.
-    logo_image: Optional[str] = ""  # Opcional; removido do payload, utiliza default.
+    # Campo "logo_image" foi removido; usaremos sempre o asset padrão
     keyword1: str
     keyword2: str
     keyword3: str
@@ -93,9 +93,9 @@ class CampaignRequest(BaseModel):
 
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
-        # Remove qualquer ponto e vírgula extra no final da URL.
+        # Remove espaços e pontos-e-vírgula extras à direita.
         if isinstance(value, str):
-            return value.rstrip(";")
+            return value.rstrip(" ;")
         return value
 
 # Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset
