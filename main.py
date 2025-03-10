@@ -49,9 +49,11 @@ async def log_requests(request: Request, call_next):
     except Exception:
         body_text = str(body_bytes)
     
-    # Remove o trecho '";' ao final de qualquer valor (por exemplo, no cover_photo)
-    # Também remove espaços extras
-    body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
+    # Remover qualquer ocorrência de '";' antes de uma vírgula
+    body_text = re.sub(r'";\s*,', '",', body_text)
+    # Também remova espaços extras no final de qualquer valor entre aspas
+    body_text = re.sub(r'("\s*)+$', '"', body_text)
+    
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
     
@@ -62,7 +64,7 @@ async def log_requests(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para a campanha, permitindo campos extras.
+# Modelo de dados para a campanha; permite campos extras.
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     
@@ -70,14 +72,14 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # URL ou resource name
-    # Campo "logo_image" removido; usaremos sempre o asset padrão.
+    cover_photo: str  # Pode ser um URL ou já o resource name do asset.
+    # Campo "logo_image" removido; será sempre utilizado o asset padrão.
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # Se enviado como string, ex: "$50", será convertido.
-    start_date: str  # Formato YYYYMMDD
-    end_date: str    # Formato YYYYMMDD
+    budget: int  # valor em micros (se for string, ex: "$50", será convertido)
+    start_date: str  # formato YYYYMMDD
+    end_date: str    # formato YYYYMMDD
     price_model: str
     campaign_type: str
     audience_gender: str
@@ -102,7 +104,6 @@ class CampaignRequest(BaseModel):
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
         if isinstance(value, str):
-            # Remove espaços e quaisquer pontos-e-vírgula extras à direita.
             cleaned = value.strip().rstrip(" ;")
             # Se não tiver esquema, adiciona "http://"
             if cleaned and not urlparse(cleaned).scheme:
@@ -128,7 +129,7 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
     logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
     return resource_name
 
-# Função para obter o customer ID
+# Função para obter o customer ID.
 def get_customer_id(client: GoogleAdsClient) -> str:
     customer_service = client.get_service("CustomerService")
     accessible_customers = customer_service.list_accessible_customers()
@@ -137,7 +138,7 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     resource_name = accessible_customers.resource_names[0]
     return resource_name.split("/")[-1]
 
-# Cria o Campaign Budget
+# Cria o Campaign Budget.
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
     logging.info("Criando Campaign Budget.")
     campaign_budget_service = client.get_service("CampaignBudgetService")
@@ -153,7 +154,7 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign
+# Cria a Campaign.
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
@@ -168,7 +169,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign.campaign_budget = budget_resource_name
     campaign.start_date = data.start_date
     campaign.end_date = data.end_date
-    # Fallback para Manual CPC (mesmo que o price_model seja CPA)
     campaign.manual_cpc = client.get_type("ManualCpc")
     response = campaign_service.mutate_campaigns(
         customer_id=customer_id, operations=[campaign_operation]
@@ -177,7 +177,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     logging.info(f"Campaign criado: {resource_name}")
     return resource_name
 
-# Cria o Ad Group
+# Cria o Ad Group.
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Ad Group.")
     ad_group_service = client.get_service("AdGroupService")
@@ -187,7 +187,7 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     ad_group.campaign = campaign_resource_name
     ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
     ad_group.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
-    ad_group.cpc_bid_micros = 1_000_000  # Lance de US$1.00
+    ad_group.cpc_bid_micros = 1_000_000
     response = ad_group_service.mutate_ad_groups(
         customer_id=customer_id, operations=[ad_group_operation]
     )
@@ -195,7 +195,7 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     logging.info(f"Ad Group criado: {resource_name}")
     return resource_name
 
-# Cria as Keywords (Ad Group Criterion) para Display
+# Cria as Keywords (Ad Group Criterion) para Display.
 def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest):
     logging.info("Criando Display Keywords no Ad Group.")
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
@@ -221,7 +221,7 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         for result in response.results:
             logging.info(f"Ad Group Criterion criado: {result.resource_name}")
 
-# Cria o Responsive Display Ad usando os dados do JSON
+# Cria o Responsive Display Ad usando os dados do JSON.
 def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Responsive Display Ad.")
     ad_group_ad_service = client.get_service("AdGroupAdService")
@@ -230,8 +230,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad_group_ad.ad_group = ad_group_resource_name
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
     ad = ad_group_ad.ad
-    ad.final_urls.append("https://example.com")  # URL de destino – ajuste conforme necessário
-
+    ad.final_urls.append("https://example.com")
+    
     # Headlines
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
@@ -244,7 +244,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     headline3 = client.get_type("AdTextAsset")
     headline3.text = data.keyword3
     ad.responsive_display_ad.headlines.append(headline3)
-
+    
     # Descrições
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
@@ -253,11 +253,11 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     desc2 = client.get_type("AdTextAsset")
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
-
+    
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
-
-    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, usa o resource name.
+    
+    # Marketing image
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
@@ -268,7 +268,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
         ad.responsive_display_ad.marketing_images.append(img)
     else:
         raise Exception("O campo 'cover_photo' está vazio. É necessário fornecer um URL ou resource name válido.")
-
+    
     # Logo: sempre utiliza o asset padrão.
     logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
@@ -285,11 +285,11 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
         asset.image_asset.data = image_data
         mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
         logo_asset_resource = mutate_response.results[0].resource_name
-
+    
     logo = client.get_type("AdImageAsset")
     logo.asset = logo_asset_resource
     ad.responsive_display_ad.logo_images.append(logo)
-
+    
     response = ad_group_ad_service.mutate_ad_group_ads(
         customer_id=customer_id, operations=[ad_group_ad_operation]
     )
@@ -297,7 +297,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
-# Aplica critérios de targeting à campanha (gênero, idade e dispositivos)
+# Aplica critérios de targeting à campanha (gênero, idade e dispositivos).
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
@@ -315,7 +315,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.gender.type_ = gender
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Idade – exemplo simplificado para faixa 18-24 se aplicável
+    # Idade (exemplo para faixa 18-24)
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
@@ -350,4 +350,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
     uvicorn.run(app, host="0.0.0.0", port=port)
-
