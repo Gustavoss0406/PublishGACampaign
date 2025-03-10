@@ -5,6 +5,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
@@ -48,9 +49,9 @@ async def log_requests(request: Request, call_next):
     except Exception:
         body_text = str(body_bytes)
     
-    # Substitui o trecho '";,' por '",'
-    body_text = body_text.replace('";,', '",')
-    
+    # Remove o trecho '";' ao final de qualquer valor (por exemplo, no cover_photo)
+    # Também remove espaços extras
+    body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
     
@@ -61,7 +62,7 @@ async def log_requests(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados mapeando os campos do JSON recebido; permite campos extras.
+# Modelo de dados para a campanha, permitindo campos extras.
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     
@@ -69,14 +70,14 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # Pode ser um URL ou o resource name do asset de imagem.
-    # Campo "logo_image" removido; será usado sempre o asset padrão.
+    cover_photo: str  # URL ou resource name
+    # Campo "logo_image" removido; usaremos sempre o asset padrão.
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # valor em micros (converteremos se for string, ex: "$100")
-    start_date: str  # formato YYYYMMDD
-    end_date: str    # formato YYYYMMDD
+    budget: int  # Se enviado como string, ex: "$50", será convertido.
+    start_date: str  # Formato YYYYMMDD
+    end_date: str    # Formato YYYYMMDD
     price_model: str
     campaign_type: str
     audience_gender: str
@@ -100,12 +101,16 @@ class CampaignRequest(BaseModel):
 
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
-        # Remove espaços e quaisquer pontos-e-vírgula extras à direita.
         if isinstance(value, str):
-            return value.rstrip(" ;")
+            # Remove espaços e quaisquer pontos-e-vírgula extras à direita.
+            cleaned = value.strip().rstrip(" ;")
+            # Se não tiver esquema, adiciona "http://"
+            if cleaned and not urlparse(cleaned).scheme:
+                cleaned = "http://" + cleaned
+            return cleaned
         return value
 
-# Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset
+# Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset.
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -163,7 +168,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign.campaign_budget = budget_resource_name
     campaign.start_date = data.start_date
     campaign.end_date = data.end_date
-    # Mesmo que o price_model seja CPA, usamos fallback para Manual CPC neste exemplo.
+    # Fallback para Manual CPC (mesmo que o price_model seja CPA)
     campaign.manual_cpc = client.get_type("ManualCpc")
     response = campaign_service.mutate_campaigns(
         customer_id=customer_id, operations=[campaign_operation]
@@ -227,7 +232,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad = ad_group_ad.ad
     ad.final_urls.append("https://example.com")  # URL de destino – ajuste conforme necessário
 
-    # Headlines: utilizando os dados do JSON
+    # Headlines
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
     ad.responsive_display_ad.headlines.append(headline1)
@@ -240,7 +245,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     headline3.text = data.keyword3
     ad.responsive_display_ad.headlines.append(headline3)
 
-    # Descrições: usando campaign_description e objective
+    # Descrições
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
@@ -252,7 +257,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
 
-    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, assume que já é o resource name.
+    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, usa o resource name.
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
@@ -344,4 +349,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=p
