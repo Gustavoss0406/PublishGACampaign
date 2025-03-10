@@ -3,6 +3,7 @@ import sys
 import uuid
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
@@ -62,6 +63,7 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str  # Pode ser um URL ou o resource name do asset de imagem.
+    logo_image: Optional[str] = ""  # Opcional; removido do payload, utiliza default.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -87,6 +89,13 @@ class CampaignRequest(BaseModel):
     def convert_age(cls, value):
         if isinstance(value, str):
             return int(value)
+        return value
+
+    @field_validator("cover_photo", mode="before")
+    def clean_cover_photo(cls, value):
+        # Remove qualquer ponto e vírgula extra no final da URL.
+        if isinstance(value, str):
+            return value.rstrip(";")
         return value
 
 # Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset
