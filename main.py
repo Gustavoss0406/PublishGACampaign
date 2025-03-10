@@ -3,7 +3,6 @@ import sys
 import uuid
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
@@ -63,7 +62,6 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str  # Pode ser um URL ou o resource name do asset de imagem.
-    logo_image: Optional[str] = ""  # Opcional; se não enviado, tenta usar DEFAULT_LOGO_ASSET ou um arquivo local.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -250,33 +248,23 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio. É necessário fornecer um URL ou resource name válido.")
 
-    # Logo: se logo_image for fornecido, usa-o (faz upload se necessário); caso contrário, tenta DEFAULT_LOGO_ASSET;
-    # se essa variável também não estiver definida, utiliza um arquivo local "default_logo.png"
-    if data.logo_image:
-        if data.logo_image.startswith("http"):
-            logo_asset_resource = upload_image_asset(client, customer_id, data.logo_image)
-        else:
-            logo_asset_resource = data.logo_image
-    else:
-        logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
-        if not logo_asset_resource:
-            default_logo_path = "icon-Adstock-Vetor2.png"
-            if not os.path.exists(default_logo_path):
-                raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo default_logo.png não foi encontrado.")
-            with open(default_logo_path, "rb") as f:
-                image_data = f.read()
-            asset_service = client.get_service("AssetService")
-            asset_operation = client.get_type("AssetOperation")
-            asset = asset_operation.create
-            asset.name = f"Default Logo {uuid.uuid4()}"
-            asset.type_ = client.enums.AssetTypeEnum.IMAGE
-            asset.image_asset.data = image_data
-            mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-            logo_asset_resource = mutate_response.results[0].resource_name
-
+    # Logo: sempre utiliza o asset padrão.
+    logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
-        raise Exception("Nenhum asset de logotipo foi fornecido e não foi possível obter um valor padrão.")
-    
+        default_logo_path = "icon-Adstock-Vetor2.png"
+        if not os.path.exists(default_logo_path):
+            raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo icon-Adstock-Vetor2.png não foi encontrado.")
+        with open(default_logo_path, "rb") as f:
+            image_data = f.read()
+        asset_service = client.get_service("AssetService")
+        asset_operation = client.get_type("AssetOperation")
+        asset = asset_operation.create
+        asset.name = f"Default Logo {uuid.uuid4()}"
+        asset.type_ = client.enums.AssetTypeEnum.IMAGE
+        asset.image_asset.data = image_data
+        mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+        logo_asset_resource = mutate_response.results[0].resource_name
+
     logo = client.get_type("AdImageAsset")
     logo.asset = logo_asset_resource
     ad.responsive_display_ad.logo_images.append(logo)
