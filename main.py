@@ -349,4 +349,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
-    uvicorn.run(app, host="0.0.0.0", port=p
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
