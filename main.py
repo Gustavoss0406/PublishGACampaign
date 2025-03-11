@@ -44,6 +44,7 @@ def process_logo_image(logo_path: str) -> bytes:
     Carrega o logotipo a partir do arquivo padrao.jpg.
     Assume que o arquivo já possui exatamente 1200x1200 pixels.
     Apenas remove metadados e converte para JPEG.
+    (Esta função não será utilizada, pois removemos o logo.)
     """
     try:
         if not os.path.exists(logo_path):
@@ -304,7 +305,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad = ad_group_ad.ad
     ad.final_urls.append("https://example.com")
     
-    # Headlines
+    # Headlines (títulos curtos)
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name.strip()
     ad.responsive_display_ad.headlines.append(headline1)
@@ -334,6 +335,13 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
+    # Campo obrigatório: Long Headline
+    long_headline = client.get_type("AdTextAsset")
+    # Aqui usamos uma combinação do nome da campanha e objetivo; ajuste conforme sua necessidade
+    long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
+    ad.responsive_display_ad.long_headline.CopyFrom(long_headline)
+    logging.debug(f"Long Headline definido: {long_headline.text}")
+    
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo, process=True)
@@ -352,24 +360,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Logotipo a partir do arquivo padrao.jpg (1200x1200)
-    logo_path = "padrao.jpg"
-    image_data = process_logo_image(logo_path)
-    asset_service = client.get_service("AssetService")
-    asset_operation = client.get_type("AssetOperation")
-    asset = asset_operation.create
-    asset.name = f"Logo_{uuid.uuid4().hex[:6]}"
-    asset.type_ = client.enums.AssetTypeEnum.IMAGE
-    asset.image_asset.data = image_data
-    asset.image_asset.mime_type = client.enums.MimeTypeEnum.IMAGE_JPEG
-    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-    logo_asset_resource = mutate_response.results[0].resource_name
-    logging.debug(f"Logo asset resource obtido: {logo_asset_resource}")
-    
-    logo = client.get_type("AdImageAsset")
-    logo.asset = logo_asset_resource
-    ad.responsive_display_ad.logo_images.append(logo)
-    logging.debug(f"Logo asset final: {logo.asset}")
+    # Removemos o bloco de logo, pois o logo não é relevante e estava causando erro de aspecto.
     
     response = ad_group_ad_service.mutate_ad_group_ads(
         customer_id=customer_id, operations=[ad_group_ad_operation]
