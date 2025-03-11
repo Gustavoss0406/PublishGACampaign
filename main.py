@@ -138,6 +138,16 @@ def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_u
     logging.info(f"Imagem quadrada enviada com sucesso. Resource name: {resource_name}")
     return resource_name
 
+# Função para obter o customer ID.
+def get_customer_id(client: GoogleAdsClient) -> str:
+    customer_service = client.get_service("CustomerService")
+    accessible_customers = customer_service.list_accessible_customers()
+    if not accessible_customers.resource_names:
+        raise Exception("Nenhum customer acessível encontrado.")
+    resource_name = accessible_customers.resource_names[0]
+    logging.debug(f"Accessible customer: {resource_name}")
+    return resource_name.split("/")[-1]
+
 # Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados.
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
