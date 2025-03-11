@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware para pré-processar o corpo da requisição
+# Middleware para pré-processar o corpo da requisição e remover caracteres indesejados
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -47,24 +47,18 @@ async def preprocess_request_body(request: Request, call_next):
     body_bytes = await request.body()
     try:
         body_text = body_bytes.decode("utf-8")
-        data = json.loads(body_text)
-    except Exception as e:
-        logging.error("Falha ao decodificar JSON do corpo da requisição.", exc_info=True)
-        data = {}
-    # Se o campo cover_photo existir, remova quaisquer espaços e ponto-e-vírgula extras.
-    if "cover_photo" in data and isinstance(data["cover_photo"], str):
-        original = data["cover_photo"]
-        # Remove espaços e caracteres indesejados no final
-        cleaned = original.strip().rstrip(" ;")
-        # Se a URL não possuir esquema, adiciona "http://"
-        if cleaned and not urlparse(cleaned).scheme:
-            cleaned = "http://" + cleaned
-        data["cover_photo"] = cleaned
-        logging.info(f"Cover photo original: {original}")
-        logging.info(f"Cover photo após limpeza: {data['cover_photo']}")
-    new_body = json.dumps(data)
-    logging.info(f"Corpo da requisição final: {new_body}")
-    request._receive = lambda: {"type": "http.request", "body": new_body.encode("utf-8")}
+    except Exception:
+        body_text = str(body_bytes)
+    
+    # Tenta remover um ponto-e-vírgula imediatamente antes da aspa de fechamento do campo cover_photo.
+    # Por exemplo: "cover_photo": "https://...jpg?token=...";,  => "cover_photo": "https://...jpg?token=...", 
+    body_text = re.sub(r'("cover_photo":\s*".+?)";(\s*,)', r'\1"\2', body_text)
+    logging.info(f"Request body (modificado): {body_text}")
+    modified_body_bytes = body_text.encode("utf-8")
+    
+    async def receive():
+        return {"type": "http.request", "body": modified_body_bytes}
+    request._receive = receive
     response = await call_next(request)
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
@@ -77,7 +71,7 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # URL ou resource name do asset de imagem.
+    cover_photo: str  # Pode ser um URL ou já o resource name do asset.
     # Campo "logo_image" removido; usaremos sempre o asset padrão.
     keyword1: str
     keyword2: str
@@ -109,7 +103,6 @@ class CampaignRequest(BaseModel):
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
         if isinstance(value, str):
-            # Já deve estar limpo pelo middleware; porém, uma limpeza adicional é realizada aqui.
             cleaned = value.strip().rstrip(" ;")
             if cleaned and not urlparse(cleaned).scheme:
                 cleaned = "http://" + cleaned
@@ -262,7 +255,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     # Business name
     ad.responsive_display_ad.business_name = data.campaign_name
     
-    # Marketing image
+    # Marketing image: se cover_photo for um URL, faz o upload; caso contrário, assume que já é o resource name.
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
