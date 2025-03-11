@@ -41,19 +41,18 @@ app.add_middleware(
 
 def process_logo_image(logo_path: str) -> bytes:
     """
-    Carrega o logotipo a partir do arquivo padrao.jpg.
-    Mesmo que a imagem já seja 1200x1200, ela é reprocessada para remover metadados e corrigir
-    a orientação EXIF, garantindo que o ativo enviado tenha aspecto 1:1.
-    Se ocorrer erro, gera uma imagem branca de 1200x1200.
+    Carrega o logotipo a partir do arquivo padrao.jpg e garante que ele seja exatamente 1200x1200.
+    Remove os metadados EXIF para evitar informações que possam alterar o aspecto da imagem.
+    Se ocorrer algum erro, gera uma imagem branca de 1200x1200.
     """
     try:
         if os.path.exists(logo_path):
             with Image.open(logo_path) as img:
-                # Corrige a orientação baseada nos metadados EXIF, se necessário
+                # Corrige a orientação e remove EXIF
                 img = ImageOps.exif_transpose(img)
                 img = img.convert("RGB")
-                logging.debug(f"Logo original (após exif_transpose): {img.size}")
-                # Força a imagem a ter exatamente 1200x1200 usando ImageOps.fit
+                logging.debug(f"Logo original: {img.size}")
+                # Força o recorte e redimensionamento para 1200x1200
                 img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
             logging.warning(f"Arquivo {logo_path} não encontrado. Gerando logotipo em branco.")
@@ -62,11 +61,13 @@ def process_logo_image(logo_path: str) -> bytes:
         logging.error(f"Erro ao abrir {logo_path}: {e}. Gerando logotipo em branco.")
         img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     
+    # Salva a imagem sem metadados
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
     logging.debug(f"Logo processada: tamanho {img.size}, {len(processed_data)} bytes")
     return processed_data
+
 
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
