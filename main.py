@@ -13,7 +13,7 @@ from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 from io import BytesIO
 
 # Configuração de logs detalhados
@@ -39,29 +39,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Função para processar a imagem do logotipo e garantir que ela seja quadrada (1200x1200).
 def process_logo_image(default_logo_path: str) -> bytes:
-    with Image.open(default_logo_path) as img:
-        img = img.convert("RGB")
-        width, height = img.size
-        logging.debug(f"Logo original: {width}x{height}")
-        # Usar divisão inteira para garantir limites exatos
-        min_dim = min(width, height)
-        left = (width - min_dim) // 2
-        top = (height - min_dim) // 2
-        right = left + min_dim
-        bottom = top + min_dim
-        img_cropped = img.crop((left, top, right, bottom))
-        # Redimensiona para exatamente 1200x1200
-        img_resized = img_cropped.resize((1200, 1200))
-        logging.debug(f"Logo após crop e resize: {img_resized.size}")
-        buf = BytesIO()
-        img_resized.save(buf, format="PNG")
-        processed_data = buf.getvalue()
-        logging.debug(f"Logo processada: {len(processed_data)} bytes")
-        return processed_data
+    """
+    Processa o logotipo garantindo que a imagem resultante seja exatamente 1200x1200 (proporção 1:1).
+    Se o arquivo não existir ou houver problema, gera uma imagem em branco.
+    """
+    try:
+        if os.path.exists(default_logo_path):
+            with Image.open(default_logo_path) as img:
+                img = img.convert("RGB")
+                width, height = img.size
+                logging.debug(f"Logo original: {width}x{height}")
+                # Usar divisão inteira para limites exatos
+                min_dim = min(width, height)
+                left = (width - min_dim) // 2
+                top = (height - min_dim) // 2
+                right = left + min_dim
+                bottom = top + min_dim
+                img_cropped = img.crop((left, top, right, bottom))
+        else:
+            logging.warning(f"Arquivo {default_logo_path} não encontrado. Gerando logotipo em branco.")
+            img_cropped = Image.new("RGB", (min(1200, 1200), 1200), (255, 255, 255))
+    except Exception as e:
+        logging.error(f"Erro ao abrir {default_logo_path}: {e}. Gerando logotipo em branco.")
+        img_cropped = Image.new("RGB", (1200, 1200), (255, 255, 255))
+    # Redimensiona para 1200x1200
+    img_resized = img_cropped.resize((1200, 1200))
+    buf = BytesIO()
+    img_resized.save(buf, format="PNG")
+    processed_data = buf.getvalue()
+    logging.debug(f"Logo processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
+    return processed_data
 
-# Função para processar a imagem de capa para garantir a proporção 1.91:1 com tamanho 1200x628.
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     width, height = img.size
@@ -83,7 +92,6 @@ def process_cover_photo(image_data: bytes) -> bytes:
     logging.debug(f"Cover processada: tamanho 1200x628, {len(processed_data)} bytes")
     return processed_data
 
-# Função para processar uma imagem de forma quadrada (1200x1200).
 def process_square_image(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     img = img.convert("RGB")
@@ -101,7 +109,6 @@ def process_square_image(image_data: bytes) -> bytes:
     logging.debug(f"Imagem quadrada processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
     return processed_data
 
-# Função para fazer o upload da imagem; se process=True, processa a imagem (para capa ou logotipo).
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -121,7 +128,6 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
     logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
     return resource_name
 
-# Função para fazer o upload da imagem quadrada.
 def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
     logging.info(f"Fazendo download da imagem quadrada a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -140,7 +146,6 @@ def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_u
     logging.info(f"Imagem quadrada enviada com sucesso. Resource name: {resource_name}")
     return resource_name
 
-# Função para obter o customer ID.
 def get_customer_id(client: GoogleAdsClient) -> str:
     customer_service = client.get_service("CustomerService")
     accessible_customers = customer_service.list_accessible_customers()
@@ -150,7 +155,6 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     logging.debug(f"Accessible customer: {resource_name}")
     return resource_name.split("/")[-1]
 
-# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados.
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -160,7 +164,6 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove aspas e ponto e vírgula indesejados antes da vírgula do campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -172,7 +175,6 @@ async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para a campanha.
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     
@@ -180,13 +182,13 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # URL ou resource name do asset.
+    cover_photo: str
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # Valor em micros (se for string, ex: "$50", será convertido).
-    start_date: str  # Formato YYYYMMDD.
-    end_date: str    # Formato YYYYMMDD.
+    budget: int
+    start_date: str
+    end_date: str
     price_model: str
     campaign_type: str
     audience_gender: str
@@ -219,7 +221,6 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Cria o Campaign Budget.
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
     logging.info("Criando Campaign Budget.")
     campaign_budget_service = client.get_service("CampaignBudgetService")
@@ -236,7 +237,6 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign (com sufixo único) e define o business_name igual ao campaign_name.
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
@@ -262,7 +262,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     logging.info(f"Campaign criado: {resource_name}")
     return resource_name
 
-# Cria o Ad Group.
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Ad Group.")
     ad_group_service = client.get_service("AdGroupService")
@@ -281,7 +280,6 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     logging.info(f"Ad Group criado: {resource_name}")
     return resource_name
 
-# Cria as Keywords (Ad Group Criterion) para Display.
 def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest):
     logging.info("Criando Display Keywords no Ad Group.")
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
@@ -305,7 +303,6 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         for result in response.results:
             logging.info(f"Ad Group Criterion criado: {result.resource_name}")
 
-# Cria o Responsive Display Ad usando os dados do JSON.
 def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Responsive Display Ad.")
     ad_group_ad_service = client.get_service("AdGroupAdService")
@@ -343,11 +340,9 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.descriptions.append(desc2)
     logging.debug(f"Descrição 2: {desc2.text}")
     
-    # Business name: igual ao campaign_name.
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
-    # Marketing image (landscape) e Square Marketing Image (obrigatório)
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo, process=True)
@@ -355,12 +350,10 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
         else:
             marketing_asset_resource = data.cover_photo
             square_asset_resource = data.cover_photo
-        # Landscape image
         img = client.get_type("AdImageAsset")
         img.asset = marketing_asset_resource
         ad.responsive_display_ad.marketing_images.append(img)
         logging.debug(f"Marketing image asset: {img.asset}")
-        # Square image
         square_img = client.get_type("AdImageAsset")
         square_img.asset = square_asset_resource
         ad.responsive_display_ad.square_marketing_images.append(square_img)
@@ -368,10 +361,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Logo: sempre processa o arquivo default.png para garantir a proporção 1:1.
+    # Força o processamento do logotipo sempre a partir do arquivo default.png
     default_logo_path = "default.png"
-    if not os.path.exists(default_logo_path):
-        raise Exception("Arquivo de logotipo não encontrado.")
     image_data = process_logo_image(default_logo_path)
     asset_service = client.get_service("AssetService")
     asset_operation = client.get_type("AssetOperation")
@@ -395,7 +386,6 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
-# Aplica critérios de targeting à campanha.
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
@@ -440,7 +430,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
 
-# Registrar as rotas para "/create_campaign" e "/create_campaign/".
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     try:
@@ -479,7 +468,6 @@ async def create_campaign(request_data: CampaignRequest):
         logging.exception("Erro inesperado.")
         raise HTTPException(status_code=500, detail=str(ex))
 
-# Registrar rota com barra final também.
 app.post("/create_campaign/")(create_campaign)
 
 if __name__ == "__main__":
