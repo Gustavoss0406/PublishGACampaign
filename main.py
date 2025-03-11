@@ -370,6 +370,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
+    # Gênero
     gender_mapping = {
         "MALE": client.enums.GenderTypeEnum.MALE,
         "FEMALE": client.enums.GenderTypeEnum.FEMALE
@@ -380,17 +381,20 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.gender.type_ = gender
-        # Não definimos o campo "negative"
+        # Definindo explicitamente que este critério é inclusivo
+        criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
+    # Faixa etária
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
-        # Não definimos o campo "negative"
+        criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
+    # Dispositivos
     device_mapping = {
         "SMARTPHONE": client.enums.DeviceEnum.MOBILE,
         "DESKTOP": client.enums.DeviceEnum.DESKTOP,
@@ -403,7 +407,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
             criterion = op.create
             criterion.campaign = campaign_resource_name
             criterion.device.type_ = device_mapping[d_upper]
-            # Não definimos o campo "negative"
+            criterion.negative = False
             criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
             operations.append(op)
     if operations:
