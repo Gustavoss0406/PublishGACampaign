@@ -40,7 +40,12 @@ app.add_middleware(
 )
 
 def process_logo_image(logo_path: str) -> bytes:
-    # (Função não utilizada, pois removemos o logo)
+    """
+    Carrega o logotipo a partir do arquivo padrao.jpg.
+    Assume que o arquivo já possui exatamente 1200x1200 pixels.
+    Apenas remove metadados e converte para JPEG.
+    (Esta função não será utilizada, pois removemos o logo.)
+    """
     try:
         if not os.path.exists(logo_path):
             raise FileNotFoundError(f"Arquivo {logo_path} não encontrado.")
@@ -365,38 +370,16 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
-    # Gênero: somente se for válido ("MALE" ou "FEMALE")
+    # Inclui somente o critério de gênero, se válido ("MALE" ou "FEMALE")
     if data.audience_gender and data.audience_gender.upper() in ["MALE", "FEMALE"]:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.gender.type_ = client.enums.GenderTypeEnum[data.audience_gender.upper()]
-        # Força o critério como inclusivo (negative não é enviado se não for explicitado)
+        # Definindo como inclusivo
         criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Faixa etária
-    if data.audience_min_age <= 18 <= data.audience_max_age:
-        op = client.get_type("CampaignCriterionOperation")
-        criterion = op.create
-        criterion.campaign = campaign_resource_name
-        criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
-        criterion.negative = False
-        criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
-        operations.append(op)
-    # Dispositivos: mapeia "SMARTPHONE" para "MOBILE"
-    device_map = {"SMARTPHONE": "MOBILE", "DESKTOP": "DESKTOP", "TABLET": "TABLET"}
-    for d in data.devices:
-        key = d.strip().upper()
-        if key in device_map:
-            op = client.get_type("CampaignCriterionOperation")
-            criterion = op.create
-            criterion.campaign = campaign_resource_name
-            enum_key = device_map[key]
-            criterion.device.type_ = client.enums.DeviceEnum[enum_key]
-            criterion.negative = False
-            criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
-            operations.append(op)
     if operations:
         response = campaign_criterion_service.mutate_campaign_criteria(
             customer_id=customer_id, operations=operations
