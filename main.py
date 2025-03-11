@@ -357,8 +357,6 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Removemos o processamento do logo, pois não é relevante.
-    
     response = ad_group_ad_service.mutate_ad_group_ads(
         customer_id=customer_id, operations=[ad_group_ad_operation]
     )
@@ -370,16 +368,25 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
-    # Inclui somente o critério de gênero, se válido ("MALE" ou "FEMALE")
+    # Apenas o critério de gênero será aplicado.
+    # Para segmentar apenas um gênero, usamos exclusões para remover os outros.
     if data.audience_gender and data.audience_gender.upper() in ["MALE", "FEMALE"]:
-        op = client.get_type("CampaignCriterionOperation")
-        criterion = op.create
-        criterion.campaign = campaign_resource_name
-        criterion.gender.type_ = client.enums.GenderTypeEnum[data.audience_gender.upper()]
-        # Definindo como inclusivo
-        criterion.negative = False
-        criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
-        operations.append(op)
+        desired_gender = data.audience_gender.upper()
+        # Se queremos atingir apenas MALE, excluímos FEMALE e UNDETERMINED.
+        # Se queremos atingir apenas FEMALE, excluímos MALE e UNDETERMINED.
+        if desired_gender == "MALE":
+            exclusions = ["FEMALE", "UNDETERMINED"]
+        else:
+            exclusions = ["MALE", "UNDETERMINED"]
+        for gender_to_exclude in exclusions:
+            op = client.get_type("CampaignCriterionOperation")
+            criterion = op.create
+            criterion.campaign = campaign_resource_name
+            criterion.gender.type_ = client.enums.GenderTypeEnum[gender_to_exclude]
+            # Aqui usamos negative=True para excluir o gênero indesejado
+            criterion.negative = True
+            criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
+            operations.append(op)
     if operations:
         response = campaign_criterion_service.mutate_campaign_criteria(
             customer_id=customer_id, operations=operations
