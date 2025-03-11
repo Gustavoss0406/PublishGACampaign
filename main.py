@@ -42,15 +42,17 @@ app.add_middleware(
 def process_logo_image(logo_path: str) -> bytes:
     """
     Carrega o logotipo a partir do arquivo padrao.jpg.
-    Mesmo que o arquivo já tenha 1200x1200, a imagem é reprocessada para
-    remover metadados e garantir exatamente 1200x1200 pixels.
-    Se houver erro, gera uma imagem branca de 1200x1200.
+    Mesmo que a imagem já seja 1200x1200, ela é reprocessada para remover metadados e corrigir
+    a orientação EXIF, garantindo que o ativo enviado tenha aspecto 1:1.
+    Se ocorrer erro, gera uma imagem branca de 1200x1200.
     """
     try:
         if os.path.exists(logo_path):
             with Image.open(logo_path) as img:
+                # Corrige a orientação baseada nos metadados EXIF, se necessário
+                img = ImageOps.exif_transpose(img)
                 img = img.convert("RGB")
-                logging.debug(f"Logo original: {img.size}")
+                logging.debug(f"Logo original (após exif_transpose): {img.size}")
                 # Força a imagem a ter exatamente 1200x1200 usando ImageOps.fit
                 img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
@@ -61,7 +63,6 @@ def process_logo_image(logo_path: str) -> bytes:
         img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     
     buf = BytesIO()
-    # Salva a imagem otimizando-a para remover metadados
     img.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
     logging.debug(f"Logo processada: tamanho {img.size}, {len(processed_data)} bytes")
@@ -357,7 +358,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Usa o logotipo a partir do arquivo padrao.jpg, que tem exatamente 1200x1200
+    # Usa o logotipo a partir do arquivo padrao.jpg (que tem exatamente 1200x1200)
     logo_path = "padrao.jpg"
     image_data = process_logo_image(logo_path)
     asset_service = client.get_service("AssetService")
