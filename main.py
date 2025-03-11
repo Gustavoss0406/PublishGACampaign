@@ -33,7 +33,7 @@ app = FastAPI(lifespan=lifespan)
 # Middleware CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme necessário
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,7 +62,7 @@ async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para a campanha; permite campos extras.
+# Modelo de dados para a campanha.
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     
@@ -71,7 +71,6 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str  # URL ou resource name do asset.
-    # Campo "logo_image" removido; usaremos sempre o asset padrão.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -108,7 +107,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset.
+# Função para fazer o upload da imagem e retornar o resource name.
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -157,10 +156,8 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign_service = client.get_service("CampaignService")
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
-    # Remova espaços ou caracteres especiais indesejados do nome, se necessário:
     campaign.name = data.campaign_name.strip()
     logging.debug(f"Nome da campanha: {campaign.name}")
-    # Continue com o restante da configuração...
     if data.campaign_type.upper() == "DISPLAY":
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
     else:
@@ -176,7 +173,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     resource_name = response.results[0].resource_name
     logging.info(f"Campaign criado: {resource_name}")
     return resource_name
-
 
 # Cria o Ad Group.
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
@@ -346,7 +342,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
 
-# Registrar as rotas para "/create_campaign" e "/create_campaign/".
+# Registrar as rotas para "/create_campaign" e "/create_campaign/"
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     try:
@@ -380,8 +376,8 @@ async def create_campaign(request_data: CampaignRequest):
             "ad_group_ad_resource_name": ad_group_ad_resource_name
         }
     except GoogleAdsException as ex:
-        logging.error("Erro na API do Google Ads.", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex}")
+        logging.error(f"Erro na API do Google Ads: {ex.failure}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex.failure}")
     except Exception as ex:
         logging.exception("Erro inesperado.")
         raise HTTPException(status_code=500, detail=str(ex))
