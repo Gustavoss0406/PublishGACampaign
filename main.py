@@ -39,29 +39,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def process_logo_image(default_logo_path: str) -> bytes:
+def process_logo_image(logo_path: str) -> bytes:
     """
-    Gera o logotipo com dimensões exatas 1200x1200 (aspecto 1:1) utilizando ImageOps.fit.
-    Se o arquivo não existir ou ocorrer erro, gera uma imagem branca.
+    Carrega o logotipo a partir do arquivo padrao.jpg.
+    Como a imagem já tem 1200x1200, apenas a lê e converte para bytes.
+    Se ocorrer algum erro, gera uma imagem branca de 1200x1200.
     """
     try:
-        if os.path.exists(default_logo_path):
-            with Image.open(default_logo_path) as img:
+        if os.path.exists(logo_path):
+            with Image.open(logo_path) as img:
                 img = img.convert("RGB")
                 logging.debug(f"Logo original: {img.size}")
+                # Se necessário, garantimos que esteja em 1200x1200
+                if img.size != (1200, 1200):
+                    img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
-            logging.warning(f"Arquivo {default_logo_path} não encontrado. Gerando logotipo em branco.")
+            logging.warning(f"Arquivo {logo_path} não encontrado. Gerando logotipo em branco.")
             img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     except Exception as e:
-        logging.error(f"Erro ao abrir {default_logo_path}: {e}. Gerando logotipo em branco.")
+        logging.error(f"Erro ao abrir {logo_path}: {e}. Gerando logotipo em branco.")
         img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     
-    # Garante que a imagem esteja exatamente em 1200x1200 com ImageOps.fit
-    img_fitted = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
     buf = BytesIO()
-    img_fitted.save(buf, format="PNG")
+    img.save(buf, format="PNG")
     processed_data = buf.getvalue()
-    logging.debug(f"Logo processada: tamanho {img_fitted.size}, {len(processed_data)} bytes")
+    logging.debug(f"Logo processada: tamanho {img.size}, {len(processed_data)} bytes")
     return processed_data
 
 def process_cover_photo(image_data: bytes) -> bytes:
@@ -354,13 +356,13 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Força o processamento do logotipo sempre a partir do arquivo default.png
-    default_logo_path = "default.png"
-    image_data = process_logo_image(default_logo_path)
+    # Para o logotipo, utiliza o arquivo padrao.jpg, que possui 1200x1200
+    logo_path = "padrao.jpg"
+    image_data = process_logo_image(logo_path)
     asset_service = client.get_service("AssetService")
     asset_operation = client.get_type("AssetOperation")
     asset = asset_operation.create
-    asset.name = f"Default_Logo_{uuid.uuid4().hex[:6]}"
+    asset.name = f"Logo_{uuid.uuid4().hex[:6]}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
     asset.image_asset.data = image_data
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
@@ -441,30 +443,4 @@ async def create_campaign(request_data: CampaignRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         customer_id = get_customer_id(client)
-        logging.info(f"Customer ID obtido: {customer_id}")
-        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
-        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
-        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
-        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
-        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
-        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
-        return {
-            "status": "success",
-            "campaign_resource_name": campaign_resource_name,
-            "ad_group_resource_name": ad_group_resource_name,
-            "ad_group_ad_resource_name": ad_group_ad_resource_name
-        }
-    except GoogleAdsException as ex:
-        logging.error(f"Erro na API do Google Ads: {ex.failure}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex.failure}")
-    except Exception as ex:
-        logging.exception("Erro inesperado.")
-        raise HTTPException(status_code=500, detail=str(ex))
-
-app.post("/create_campaign/")(create_campaign)
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8080))
-    logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        logging.info(f"Customer ID obtido: {
