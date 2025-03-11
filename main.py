@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Função para processar a imagem do logotipo e garantir que ela seja quadrada (512x512).
+# Função para processar a imagem do logotipo e garantir que ela seja quadrada (1200x1200).
 def process_logo_image(default_logo_path: str) -> bytes:
     with Image.open(default_logo_path) as img:
         img = img.convert("RGB")
@@ -51,8 +51,8 @@ def process_logo_image(default_logo_path: str) -> bytes:
         right = (width + min_dim) / 2
         bottom = (height + min_dim) / 2
         img_cropped = img.crop((left, top, right, bottom))
-        # Redimensiona para 512x512
-        img_resized = img_cropped.resize((512, 512))
+        # Redimensiona para 1200x1200 (garante que seja quadrada e possivelmente aceita pela API)
+        img_resized = img_cropped.resize((1200, 1200))
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
         processed_data = buf.getvalue()
@@ -81,7 +81,7 @@ def process_cover_photo(image_data: bytes) -> bytes:
     logging.debug(f"Cover processada: tamanho 1200x628, {len(processed_data)} bytes")
     return processed_data
 
-# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados
+# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados.
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -91,7 +91,7 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove '";' imediatamente antes de uma vírgula no campo cover_photo.
+    # Remove ocorrências de '";' imediatamente antes de uma vírgula no campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
