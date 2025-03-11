@@ -380,6 +380,8 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.gender.type_ = gender
+        # Define explicitamente que o targeting não é negativo.
+        criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
     if data.audience_min_age <= 18 <= data.audience_max_age:
@@ -387,6 +389,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
+        criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
     device_mapping = {
@@ -401,6 +404,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
             criterion = op.create
             criterion.campaign = campaign_resource_name
             criterion.device.type_ = device_mapping[d_upper]
+            criterion.negative = False
             criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
             operations.append(op)
     if operations:
