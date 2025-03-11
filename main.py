@@ -49,10 +49,12 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove qualquer ocorrência de '";' imediatamente antes de uma vírgula no campo cover_photo
+    
+    # Remove qualquer ocorrência de '";' imediatamente antes de uma vírgula no campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
+    
     async def receive():
         return {"type": "http.request", "body": modified_body_bytes}
     request._receive = receive
@@ -68,7 +70,7 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # Pode ser um URL ou já o resource name do asset.
+    cover_photo: str  # URL ou resource name do asset.
     # Campo "logo_image" removido; usaremos sempre o asset padrão.
     keyword1: str
     keyword2: str
@@ -116,7 +118,7 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
     asset_service = client.get_service("AssetService")
     asset_operation = client.get_type("AssetOperation")
     asset = asset_operation.create
-    asset.name = f"Image asset {uuid.uuid4()}"
+    asset.name = f"Image_asset_{uuid.uuid4()}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
     asset.image_asset.data = image_data
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
@@ -155,8 +157,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign_service = client.get_service("CampaignService")
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
-    campaign.name = data.campaign_name  # Verifique se data.campaign_name está preenchido corretamente.
-    logging.debug(f"Nome da campanha: {campaign.name}")
+    campaign.name = data.campaign_name
     if data.campaign_type.upper() == "DISPLAY":
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
     else:
@@ -172,7 +173,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     resource_name = response.results[0].resource_name
     logging.info(f"Campaign criado: {resource_name}")
     return resource_name
-
 
 # Cria o Ad Group.
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
@@ -277,7 +277,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
         asset_service = client.get_service("AssetService")
         asset_operation = client.get_type("AssetOperation")
         asset = asset_operation.create
-        asset.name = f"Default Logo {uuid.uuid4()}"
+        asset.name = f"Default_Logo_{uuid.uuid4()}"
         asset.type_ = client.enums.AssetTypeEnum.IMAGE
         asset.image_asset.data = image_data
         mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
@@ -342,7 +342,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
 
-# Registrar a rota para "/create_campaign" e "/create_campaign/"
+# Registrar as rotas para "/create_campaign" e "/create_campaign/".
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     try:
@@ -382,7 +382,7 @@ async def create_campaign(request_data: CampaignRequest):
         logging.exception("Erro inesperado.")
         raise HTTPException(status_code=500, detail=str(ex))
 
-# Registrar rota com barra final
+# Registrar rota com barra final também.
 app.post("/create_campaign/")(create_campaign)
 
 if __name__ == "__main__":
