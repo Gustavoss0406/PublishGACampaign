@@ -42,7 +42,7 @@ app.add_middleware(
 def process_logo_image(logo_path: str) -> bytes:
     """
     Carrega o logotipo a partir do arquivo padrao.jpg.
-    Como a imagem já tem 1200x1200, apenas a lê e converte para bytes.
+    Como a imagem já tem exatamente 1200x1200, apenas a lê e converte para bytes.
     Se ocorrer algum erro, gera uma imagem branca de 1200x1200.
     """
     try:
@@ -50,7 +50,7 @@ def process_logo_image(logo_path: str) -> bytes:
             with Image.open(logo_path) as img:
                 img = img.convert("RGB")
                 logging.debug(f"Logo original: {img.size}")
-                # Se necessário, garantimos que esteja em 1200x1200
+                # Garantir que a imagem esteja em 1200x1200 (caso não esteja, redimensiona)
                 if img.size != (1200, 1200):
                     img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
@@ -356,7 +356,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Para o logotipo, utiliza o arquivo padrao.jpg, que possui 1200x1200
+    # Utiliza o logotipo a partir do arquivo padrao.jpg, que tem exatamente 1200x1200
     logo_path = "padrao.jpg"
     image_data = process_logo_image(logo_path)
     asset_service = client.get_service("AssetService")
@@ -443,4 +443,30 @@ async def create_campaign(request_data: CampaignRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         customer_id = get_customer_id(client)
-        logging.info(f"Customer ID obtido: {
+        logging.info(f"Customer ID obtido: {customer_id}")
+        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
+        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
+        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
+        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
+        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
+        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
+        return {
+            "status": "success",
+            "campaign_resource_name": campaign_resource_name,
+            "ad_group_resource_name": ad_group_resource_name,
+            "ad_group_ad_resource_name": ad_group_ad_resource_name
+        }
+    except GoogleAdsException as ex:
+        logging.error(f"Erro na API do Google Ads: {ex.failure}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex.failure}")
+    except Exception as ex:
+        logging.exception("Erro inesperado.")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+app.post("/create_campaign/")(create_campaign)
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8080))
+    logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
+    uvicorn.run(app, host="0.0.0.0", port=port)
