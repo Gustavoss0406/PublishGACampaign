@@ -51,7 +51,7 @@ def process_logo_image(default_logo_path: str) -> bytes:
         right = (width + min_dim) / 2
         bottom = (height + min_dim) / 2
         img_cropped = img.crop((left, top, right, bottom))
-        # Redimensiona para 1200x1200 (garante que seja quadrada e possivelmente aceita pela API)
+        # Redimensiona para 1200x1200
         img_resized = img_cropped.resize((1200, 1200))
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
@@ -81,6 +81,63 @@ def process_cover_photo(image_data: bytes) -> bytes:
     logging.debug(f"Cover processada: tamanho 1200x628, {len(processed_data)} bytes")
     return processed_data
 
+# Função para processar uma imagem de forma quadrada (1200x1200).
+def process_square_image(image_data: bytes) -> bytes:
+    img = Image.open(BytesIO(image_data))
+    img = img.convert("RGB")
+    width, height = img.size
+    min_dim = min(width, height)
+    left = (width - min_dim) / 2
+    top = (height - min_dim) / 2
+    right = (width + min_dim) / 2
+    bottom = (height + min_dim) / 2
+    img_cropped = img.crop((left, top, right, bottom))
+    img_resized = img_cropped.resize((1200, 1200))
+    buf = BytesIO()
+    img_resized.save(buf, format="PNG")
+    processed_data = buf.getvalue()
+    logging.debug(f"Imagem quadrada processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
+    return processed_data
+
+# Função para fazer o upload da imagem; se process=True, processa a imagem (para capa ou logotipo).
+def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
+    logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
+    response = requests.get(image_url)
+    if response.status_code != 200:
+        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
+    image_data = response.content
+    if process:
+        image_data = process_cover_photo(image_data)
+    asset_service = client.get_service("AssetService")
+    asset_operation = client.get_type("AssetOperation")
+    asset = asset_operation.create
+    asset.name = f"Image_asset_{uuid.uuid4()}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = image_data
+    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+    resource_name = mutate_response.results[0].resource_name
+    logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
+    return resource_name
+
+# Função para fazer o upload da imagem quadrada.
+def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
+    logging.info(f"Fazendo download da imagem quadrada a partir do URL: {image_url}")
+    response = requests.get(image_url)
+    if response.status_code != 200:
+        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
+    image_data = response.content
+    processed_data = process_square_image(image_data)
+    asset_service = client.get_service("AssetService")
+    asset_operation = client.get_type("AssetOperation")
+    asset = asset_operation.create
+    asset.name = f"Square_Image_asset_{uuid.uuid4()}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = processed_data
+    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+    resource_name = mutate_response.results[0].resource_name
+    logging.info(f"Imagem quadrada enviada com sucesso. Resource name: {resource_name}")
+    return resource_name
+
 # Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados.
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
@@ -91,7 +148,7 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Ajuste na regex: remove as ocorrências de aspas e ponto e vírgula antes da vírgula no campo cover_photo.
+    # Remove aspas e ponto e vírgula indesejados antes da vírgula do campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -149,36 +206,6 @@ class CampaignRequest(BaseModel):
             logging.debug(f"Cover photo após limpeza: {cleaned}")
             return cleaned
         return value
-
-# Função para fazer o upload da imagem; se process=True, processa a imagem (para capa ou logotipo).
-def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
-    logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
-    response = requests.get(image_url)
-    if response.status_code != 200:
-        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
-    image_data = response.content
-    if process:
-        image_data = process_cover_photo(image_data)
-    asset_service = client.get_service("AssetService")
-    asset_operation = client.get_type("AssetOperation")
-    asset = asset_operation.create
-    asset.name = f"Image_asset_{uuid.uuid4()}"
-    asset.type_ = client.enums.AssetTypeEnum.IMAGE
-    asset.image_asset.data = image_data
-    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-    resource_name = mutate_response.results[0].resource_name
-    logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
-    return resource_name
-
-# Função para obter o customer ID.
-def get_customer_id(client: GoogleAdsClient) -> str:
-    customer_service = client.get_service("CustomerService")
-    accessible_customers = customer_service.list_accessible_customers()
-    if not accessible_customers.resource_names:
-        raise Exception("Nenhum customer acessível encontrado.")
-    resource_name = accessible_customers.resource_names[0]
-    logging.debug(f"Accessible customer: {resource_name}")
-    return resource_name.split("/")[-1]
 
 # Cria o Campaign Budget.
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
@@ -308,16 +335,24 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
-    # Marketing image (cover_photo)
+    # Marketing image (landscape) e Square Marketing Image (obrigatório)
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo, process=True)
+            square_asset_resource = upload_square_image_asset(client, customer_id, data.cover_photo)
         else:
             marketing_asset_resource = data.cover_photo
+            square_asset_resource = data.cover_photo
+        # Landscape image
         img = client.get_type("AdImageAsset")
         img.asset = marketing_asset_resource
         ad.responsive_display_ad.marketing_images.append(img)
         logging.debug(f"Marketing image asset: {img.asset}")
+        # Square image
+        square_img = client.get_type("AdImageAsset")
+        square_img.asset = square_asset_resource
+        ad.responsive_display_ad.square_marketing_images.append(square_img)
+        logging.debug(f"Square marketing image asset: {square_img.asset}")
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
