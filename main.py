@@ -366,22 +366,21 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Logo: utiliza o asset padrão.
-    logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
-    if not logo_asset_resource:
-        default_logo_path = "default.png"
-        if not os.path.exists(default_logo_path):
-            raise Exception("Arquivo de logotipo não encontrado e DEFAULT_LOGO_ASSET não definida.")
-        image_data = process_logo_image(default_logo_path)
-        asset_service = client.get_service("AssetService")
-        asset_operation = client.get_type("AssetOperation")
-        asset = asset_operation.create
-        asset.name = f"Default_Logo_{uuid.uuid4().hex[:6]}"
-        asset.type_ = client.enums.AssetTypeEnum.IMAGE
-        asset.image_asset.data = image_data
-        mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-        logo_asset_resource = mutate_response.results[0].resource_name
-        logging.debug(f"Logo asset resource obtido: {logo_asset_resource}")
+    # Logo: sempre processa o arquivo default.png para garantir a proporção 1:1.
+    default_logo_path = "default.png"
+    if not os.path.exists(default_logo_path):
+        raise Exception("Arquivo de logotipo não encontrado.")
+    image_data = process_logo_image(default_logo_path)
+    asset_service = client.get_service("AssetService")
+    asset_operation = client.get_type("AssetOperation")
+    asset = asset_operation.create
+    asset.name = f"Default_Logo_{uuid.uuid4().hex[:6]}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = image_data
+    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+    logo_asset_resource = mutate_response.results[0].resource_name
+    logging.debug(f"Logo asset resource obtido: {logo_asset_resource}")
+    
     logo = client.get_type("AdImageAsset")
     logo.asset = logo_asset_resource
     ad.responsive_display_ad.logo_images.append(logo)
