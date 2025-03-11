@@ -357,7 +357,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Removemos o processamento do logo, pois o logo não é relevante e estava causando erro de aspecto.
+    # Removemos o processamento do logo, pois não é relevante.
     
     response = ad_group_ad_service.mutate_ad_group_ads(
         customer_id=customer_id, operations=[ad_group_ad_operation]
@@ -380,8 +380,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.gender.type_ = gender
-        # Define explicitamente que o targeting não é negativo.
-        criterion.negative = False
+        # Removemos a atribuição do campo negative para evitar conflito.
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
     if data.audience_min_age <= 18 <= data.audience_max_age:
@@ -389,7 +388,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
-        criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
     device_mapping = {
@@ -404,7 +402,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
             criterion = op.create
             criterion.campaign = campaign_resource_name
             criterion.device.type_ = device_mapping[d_upper]
-            criterion.negative = False
             criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
             operations.append(op)
     if operations:
