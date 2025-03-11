@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Função para processar a imagem do logotipo e garantir que ela seja quadrada (512x512).
+# Função para processar a imagem do logotipo e garantir que ela seja quadrada (300x300).
 def process_logo_image(default_logo_path: str) -> bytes:
     with Image.open(default_logo_path) as img:
         img = img.convert("RGB")
@@ -50,8 +50,8 @@ def process_logo_image(default_logo_path: str) -> bytes:
         right = (width + min_dim) / 2
         bottom = (height + min_dim) / 2
         img_cropped = img.crop((left, top, right, bottom))
-        # Redimensiona para 512x512
-        img_resized = img_cropped.resize((512, 512))
+        # Redimensiona para 300x300
+        img_resized = img_cropped.resize((300, 300))
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
         processed_data = buf.getvalue()
@@ -149,7 +149,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Função para fazer o upload da imagem; se process=True, processa a imagem.
+# Função para fazer o upload da imagem; se process=True, processa a imagem (para capa ou logotipo).
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -196,7 +196,7 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign (com sufixo único) e define o business_name como o mesmo que o campaign_name.
+# Cria a Campaign (com sufixo único para evitar duplicatas) e define o business_name como o mesmo que o campaign_name.
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
@@ -303,7 +303,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.descriptions.append(desc2)
     logging.debug(f"Descrição 2: {desc2.text}")
     
-    # Business name: igual ao campaign_name.
+    # Business name: deve ser igual ao campaign_name.
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
@@ -320,7 +320,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Logo: utiliza o asset padrão.
+    # Logo: sempre utiliza o asset padrão.
     logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
         default_logo_path = "default.png"
