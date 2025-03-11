@@ -336,11 +336,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
     # Campo obrigatório: Long Headline
-    long_headline = client.get_type("AdTextAsset")
-    # Aqui usamos uma combinação do nome da campanha e objetivo; ajuste conforme sua necessidade
-    long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
-    ad.responsive_display_ad.long_headline.CopyFrom(long_headline)
-    logging.debug(f"Long Headline definido: {long_headline.text}")
+    ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
+    logging.debug(f"Long Headline definido: {ad.responsive_display_ad.long_headline.text}")
     
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
@@ -360,7 +357,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Removemos o bloco de logo, pois o logo não é relevante e estava causando erro de aspecto.
+    # Removemos o processamento do logo, pois o logo não é relevante e estava causando erro de aspecto.
     
     response = ad_group_ad_service.mutate_ad_group_ads(
         customer_id=customer_id, operations=[ad_group_ad_operation]
