@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Função para processar a imagem do logotipo e garantir que ela seja quadrada (300x300).
+# Função para processar a imagem do logotipo e garantir que ela seja quadrada (512x512).
 def process_logo_image(default_logo_path: str) -> bytes:
     with Image.open(default_logo_path) as img:
         img = img.convert("RGB")
@@ -50,7 +50,8 @@ def process_logo_image(default_logo_path: str) -> bytes:
         right = (width + min_dim) / 2
         bottom = (height + min_dim) / 2
         img_cropped = img.crop((left, top, right, bottom))
-        img_resized = img_cropped.resize((300, 300))
+        # Redimensiona para 512x512
+        img_resized = img_cropped.resize((512, 512))
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
         processed_data = buf.getvalue()
@@ -79,7 +80,7 @@ def process_cover_photo(image_data: bytes) -> bytes:
     logging.debug(f"Cover photo processada: tamanho 1200x628, {len(processed_data)} bytes")
     return processed_data
 
-# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados.
+# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -89,10 +90,11 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove '";' imediatamente antes de uma vírgula no campo cover_photo.
+    # Remove ocorrências de '";' imediatamente antes de uma vírgula no campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
+    
     async def receive():
         return {"type": "http.request", "body": modified_body_bytes}
     request._receive = receive
@@ -147,7 +149,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Função para fazer o upload da imagem; se process=True, processa a imagem (para capa ou logotipo).
+# Função para fazer o upload da imagem; se process=True, processa a imagem.
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -194,7 +196,7 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign (com sufixo único para evitar duplicatas) e define o business_name como o mesmo valor do campaign_name.
+# Cria a Campaign (com sufixo único) e define o business_name como o mesmo que o campaign_name.
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
@@ -301,7 +303,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.descriptions.append(desc2)
     logging.debug(f"Descrição 2: {desc2.text}")
     
-    # Business name: deve ser igual ao campaign_name.
+    # Business name: igual ao campaign_name.
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
@@ -318,7 +320,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Logo: sempre utiliza o asset padrão.
+    # Logo: utiliza o asset padrão.
     logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
         default_logo_path = "default.png"
