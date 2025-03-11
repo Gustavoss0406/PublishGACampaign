@@ -39,9 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Função para processar a imagem do logotipo e garantir que seja quadrada (300x300).
+# Função para processar a imagem do logotipo e garantir que ela seja quadrada (300x300).
 def process_logo_image(default_logo_path: str) -> bytes:
     with Image.open(default_logo_path) as img:
+        img = img.convert("RGB")
         width, height = img.size
         min_dim = min(width, height)
         left = (width - min_dim) / 2
@@ -53,7 +54,7 @@ def process_logo_image(default_logo_path: str) -> bytes:
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
         processed_data = buf.getvalue()
-        logging.debug(f"Imagem do logotipo processada: {len(processed_data)} bytes")
+        logging.debug(f"Imagem do logotipo processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
         return processed_data
 
 # Função para processar a imagem de capa para garantir a proporção 1.91:1 com tamanho 1200x628.
@@ -75,10 +76,10 @@ def process_cover_photo(image_data: bytes) -> bytes:
     buf = BytesIO()
     img.save(buf, format="PNG")
     processed_data = buf.getvalue()
-    logging.debug(f"Cover photo processada: {len(processed_data)} bytes")
+    logging.debug(f"Cover photo processada: tamanho 1200x628, {len(processed_data)} bytes")
     return processed_data
 
-# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados
+# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados.
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -88,7 +89,7 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove ocorrências de '";' imediatamente antes de uma vírgula no campo cover_photo.
+    # Remove '";' imediatamente antes de uma vírgula no campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -126,7 +127,7 @@ class CampaignRequest(BaseModel):
         if isinstance(value, str):
             value = value.replace("$", "").strip()
             numeric_value = float(value)
-            logging.debug(f"Valor do budget convertido: {numeric_value}")
+            logging.debug(f"Budget convertido: {numeric_value}")
             return int(numeric_value * 1_000_000)
         return value
 
@@ -193,7 +194,7 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign (com sufixo único para evitar duplicatas).
+# Cria a Campaign (com sufixo único para evitar duplicatas) e define o business_name como o mesmo valor do campaign_name.
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
