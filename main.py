@@ -33,7 +33,7 @@ app = FastAPI(lifespan=lifespan)
 # Middleware CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Ajuste conforme necessário
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,7 +62,7 @@ async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para a campanha.
+# Modelo de dados para a campanha; permite campos extras.
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     
@@ -107,7 +107,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Função para fazer o upload da imagem e retornar o resource name.
+# Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset.
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -156,6 +156,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign_service = client.get_service("CampaignService")
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
+    # Certifique-se de que o business name será o mesmo do campaign name
     campaign.name = data.campaign_name.strip()
     logging.debug(f"Nome da campanha: {campaign.name}")
     if data.campaign_type.upper() == "DISPLAY":
@@ -251,8 +252,9 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
     
-    # Business name
-    ad.responsive_display_ad.business_name = data.campaign_name
+    # Business name: será o mesmo que campaign_name.
+    ad.responsive_display_ad.business_name = data.campaign_name.strip()
+    logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
     # Marketing image
     if data.cover_photo:
@@ -269,9 +271,9 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     # Logo: sempre utiliza o asset padrão.
     logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
-        default_logo_path = "default.png"
+        default_logo_path = "icon-Adstock-Vetor2.png"
         if not os.path.exists(default_logo_path):
-            raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo default.png não foi encontrado.")
+            raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo icon-Adstock-Vetor2.png não foi encontrado.")
         with open(default_logo_path, "rb") as f:
             image_data = f.read()
         asset_service = client.get_service("AssetService")
@@ -342,7 +344,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
 
-# Registrar as rotas para "/create_campaign" e "/create_campaign/"
+# Registrar as rotas para "/create_campaign" e "/create_campaign/".
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
     try:
