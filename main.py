@@ -40,7 +40,12 @@ app.add_middleware(
 )
 
 def process_logo_image(logo_path: str) -> bytes:
-    # (Função não utilizada, pois removemos o logo)
+    """
+    Carrega o logotipo a partir do arquivo padrao.jpg.
+    Assume que o arquivo já possui exatamente 1200x1200 pixels.
+    Apenas remove metadados e converte para JPEG.
+    (Esta função não será utilizada, pois removemos o logo.)
+    """
     try:
         if not os.path.exists(logo_path):
             raise FileNotFoundError(f"Arquivo {logo_path} não encontrado.")
@@ -371,11 +376,11 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.gender.type_ = client.enums.GenderTypeEnum[data.audience_gender.upper()]
-        # Força o critério como inclusivo (negative não é enviado se não for explicitado)
+        # Definindo explicitamente como inclusivo
         criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Faixa etária
+    # Faixa etária: somente se os limites fizerem sentido
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
@@ -384,7 +389,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Dispositivos: mapeia "SMARTPHONE" para "MOBILE"
+    # Dispositivos: mapeamento para converter "SMARTPHONE" em "MOBILE"
     device_map = {"SMARTPHONE": "MOBILE", "DESKTOP": "DESKTOP", "TABLET": "TABLET"}
     for d in data.devices:
         key = d.strip().upper()
