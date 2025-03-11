@@ -45,18 +45,20 @@ def process_logo_image(default_logo_path: str) -> bytes:
         img = img.convert("RGB")
         width, height = img.size
         logging.debug(f"Logo original: {width}x{height}")
+        # Usar divisão inteira para garantir limites exatos
         min_dim = min(width, height)
-        left = (width - min_dim) / 2
-        top = (height - min_dim) / 2
-        right = (width + min_dim) / 2
-        bottom = (height + min_dim) / 2
+        left = (width - min_dim) // 2
+        top = (height - min_dim) // 2
+        right = left + min_dim
+        bottom = top + min_dim
         img_cropped = img.crop((left, top, right, bottom))
-        # Redimensiona para 1200x1200
+        # Redimensiona para exatamente 1200x1200
         img_resized = img_cropped.resize((1200, 1200))
+        logging.debug(f"Logo após crop e resize: {img_resized.size}")
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
         processed_data = buf.getvalue()
-        logging.debug(f"Logo processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
+        logging.debug(f"Logo processada: {len(processed_data)} bytes")
         return processed_data
 
 # Função para processar a imagem de capa para garantir a proporção 1.91:1 com tamanho 1200x628.
@@ -87,10 +89,10 @@ def process_square_image(image_data: bytes) -> bytes:
     img = img.convert("RGB")
     width, height = img.size
     min_dim = min(width, height)
-    left = (width - min_dim) / 2
-    top = (height - min_dim) / 2
-    right = (width + min_dim) / 2
-    bottom = (height + min_dim) / 2
+    left = (width - min_dim) // 2
+    top = (height - min_dim) // 2
+    right = left + min_dim
+    bottom = top + min_dim
     img_cropped = img.crop((left, top, right, bottom))
     img_resized = img_cropped.resize((1200, 1200))
     buf = BytesIO()
