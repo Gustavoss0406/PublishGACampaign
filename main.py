@@ -41,34 +41,27 @@ app.add_middleware(
 
 def process_logo_image(default_logo_path: str) -> bytes:
     """
-    Processa o logotipo garantindo que a imagem resultante seja exatamente 1200x1200 (proporção 1:1).
-    Se o arquivo não existir ou houver problema, gera uma imagem em branco.
+    Gera o logotipo com dimensões exatas 1200x1200 (aspecto 1:1) utilizando ImageOps.fit.
+    Se o arquivo não existir ou ocorrer erro, gera uma imagem branca.
     """
     try:
         if os.path.exists(default_logo_path):
             with Image.open(default_logo_path) as img:
                 img = img.convert("RGB")
-                width, height = img.size
-                logging.debug(f"Logo original: {width}x{height}")
-                # Usar divisão inteira para limites exatos
-                min_dim = min(width, height)
-                left = (width - min_dim) // 2
-                top = (height - min_dim) // 2
-                right = left + min_dim
-                bottom = top + min_dim
-                img_cropped = img.crop((left, top, right, bottom))
+                logging.debug(f"Logo original: {img.size}")
         else:
             logging.warning(f"Arquivo {default_logo_path} não encontrado. Gerando logotipo em branco.")
-            img_cropped = Image.new("RGB", (min(1200, 1200), 1200), (255, 255, 255))
+            img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     except Exception as e:
         logging.error(f"Erro ao abrir {default_logo_path}: {e}. Gerando logotipo em branco.")
-        img_cropped = Image.new("RGB", (1200, 1200), (255, 255, 255))
-    # Redimensiona para 1200x1200
-    img_resized = img_cropped.resize((1200, 1200))
+        img = Image.new("RGB", (1200, 1200), (255, 255, 255))
+    
+    # Garante que a imagem esteja exatamente em 1200x1200 com ImageOps.fit
+    img_fitted = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
     buf = BytesIO()
-    img_resized.save(buf, format="PNG")
+    img_fitted.save(buf, format="PNG")
     processed_data = buf.getvalue()
-    logging.debug(f"Logo processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
+    logging.debug(f"Logo processada: tamanho {img_fitted.size}, {len(processed_data)} bytes")
     return processed_data
 
 def process_cover_photo(image_data: bytes) -> bytes:
