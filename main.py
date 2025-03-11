@@ -381,7 +381,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion = op.create
         criterion.campaign = campaign_resource_name
         criterion.gender.type_ = gender
-        # Definindo explicitamente que este critério é inclusivo
+        # Definindo explicitamente que o critério é inclusivo
         criterion.negative = False
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
