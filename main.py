@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware para pré-processar o corpo da requisição e remover caracteres indesejados
+# Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Recebendo request: {request.method} {request.url}")
@@ -50,7 +50,8 @@ async def preprocess_request_body(request: Request, call_next):
     except Exception:
         body_text = str(body_bytes)
     
-    # Remover qualquer ocorrência de '";' imediatamente antes de uma vírgula
+    # Remove qualquer ocorrência de '";' imediatamente antes de uma vírgula, 
+    # por exemplo: "cover_photo": "https://...jpg?token=...";,  =>  "cover_photo": "https://...jpg?token=...", 
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -70,14 +71,13 @@ class CampaignRequest(BaseModel):
     campaign_name: str
     campaign_description: str
     objective: str
-    cover_photo: str  # URL ou resource name do asset.
-    # Campo "logo_image" removido; sempre usaremos o asset padrão.
+    cover_photo: str  # Pode ser um URL ou já o resource name do asset.
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # valor em micros (se for string, ex: "$50", será convertido)
-    start_date: str  # formato YYYYMMDD
-    end_date: str    # formato YYYYMMDD
+    budget: int  # Valor em micros (se for string, ex: "$50", será convertido).
+    start_date: str  # Formato YYYYMMDD.
+    end_date: str    # Formato YYYYMMDD.
     price_model: str
     campaign_type: str
     audience_gender: str
