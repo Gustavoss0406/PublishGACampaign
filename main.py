@@ -42,7 +42,8 @@ app.add_middleware(
 def process_logo_image(logo_path: str) -> bytes:
     """
     Carrega o logotipo a partir do arquivo padrao.jpg.
-    Como a imagem já tem exatamente 1200x1200, apenas a lê e converte para bytes.
+    Mesmo que o arquivo já tenha 1200x1200, ele é redimensionado e colado em uma nova imagem
+    para garantir que não haja metadados indesejados e que a imagem seja exatamente 1200x1200.
     Se ocorrer algum erro, gera uma imagem branca de 1200x1200.
     """
     try:
@@ -50,9 +51,6 @@ def process_logo_image(logo_path: str) -> bytes:
             with Image.open(logo_path) as img:
                 img = img.convert("RGB")
                 logging.debug(f"Logo original: {img.size}")
-                # Se não estiver 1200x1200, forçamos a dimensão
-                if img.size != (1200, 1200):
-                    img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
             logging.warning(f"Arquivo {logo_path} não encontrado. Gerando logotipo em branco.")
             img = Image.new("RGB", (1200, 1200), (255, 255, 255))
@@ -60,10 +58,17 @@ def process_logo_image(logo_path: str) -> bytes:
         logging.error(f"Erro ao abrir {logo_path}: {e}. Gerando logotipo em branco.")
         img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     
+    # Redimensiona para exatamente 1200x1200
+    img = img.resize((1200, 1200))
+    logging.debug(f"Logo redimensionada: {img.size}")
+    # Cria uma nova imagem em branco e cola a logo redimensionada nela
+    new_img = Image.new("RGB", (1200, 1200), (255, 255, 255))
+    new_img.paste(img, (0, 0))
+    logging.debug(f"Logo final: {new_img.size}")
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    new_img.save(buf, format="PNG")
     processed_data = buf.getvalue()
-    logging.debug(f"Logo processada: tamanho {img.size}, {len(processed_data)} bytes")
+    logging.debug(f"Logo processada (bytes): {len(processed_data)}")
     return processed_data
 
 def process_cover_photo(image_data: bytes) -> bytes:
@@ -356,7 +361,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Usa o logotipo a partir do arquivo padrao.jpg (com 1200x1200)
+    # Usa o logotipo a partir do arquivo padrao.jpg, que tem exatamente 1200x1200
     logo_path = "padrao.jpg"
     image_data = process_logo_image(logo_path)
     asset_service = client.get_service("AssetService")
@@ -365,7 +370,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     asset.name = f"Logo_{uuid.uuid4().hex[:6]}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
     asset.image_asset.data = image_data
-    # Define explicitamente o mime type para evitar erro de campo obrigatório
+    # Define explicitamente o mime type para IMAGE_PNG
     asset.image_asset.mime_type = client.enums.MimeTypeEnum.IMAGE_PNG
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
     logo_asset_resource = mutate_response.results[0].resource_name
