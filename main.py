@@ -157,7 +157,10 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign_service = client.get_service("CampaignService")
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
-    campaign.name = data.campaign_name
+    # Remova espaços ou caracteres especiais indesejados do nome, se necessário:
+    campaign.name = data.campaign_name.strip()
+    logging.debug(f"Nome da campanha: {campaign.name}")
+    # Continue com o restante da configuração...
     if data.campaign_type.upper() == "DISPLAY":
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
     else:
@@ -173,6 +176,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     resource_name = response.results[0].resource_name
     logging.info(f"Campaign criado: {resource_name}")
     return resource_name
+
 
 # Cria o Ad Group.
 def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
