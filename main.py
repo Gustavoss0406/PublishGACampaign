@@ -91,8 +91,8 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove ocorrências de '";' imediatamente antes de uma vírgula no campo cover_photo.
-    body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
+    # Ajuste na regex: utiliza re.DOTALL para capturar quebras de linha e remove caracteres indesejados (" ; e espaços) antes da vírgula.
+    body_text = re.sub(r'("cover_photo":\s*".+?)[\";\s]+,', r'\1",', body_text, flags=re.DOTALL)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
     
