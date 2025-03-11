@@ -13,6 +13,8 @@ from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 import requests
+from PIL import Image
+from io import BytesIO
 
 # Configuração de logs detalhados
 logging.basicConfig(
@@ -39,6 +41,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Função para processar a imagem de capa para garantir a proporção 1.91:1 e tamanho 1200x628
+def process_cover_photo(image_data: bytes) -> bytes:
+    img = Image.open(BytesIO(image_data))
+    width, height = img.size
+    target_ratio = 1.91
+    current_ratio = width / height
+    if current_ratio > target_ratio:
+        # Muito larga: recorta a largura
+        new_width = int(height * target_ratio)
+        left = (width - new_width) // 2
+        img = img.crop((left, 0, left + new_width, height))
+    elif current_ratio < target_ratio:
+        # Muito alta: recorta a altura
+        new_height = int(width / target_ratio)
+        top = (height - new_height) // 2
+        img = img.crop((0, top, width, top + new_height))
+    # Redimensiona para 1200x628
+    img = img.resize((1200, 628))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
 # Middleware para pré-processar o corpo da requisição e limpar caracteres indesejados
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
@@ -49,8 +73,7 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    
-    # Remove qualquer ocorrência de '";' imediatamente antes de uma vírgula no campo cover_photo.
+    # Remove '";' imediatamente antes de uma vírgula no campo cover_photo
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -62,7 +85,7 @@ async def preprocess_request_body(request: Request, call_next):
     logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
-# Modelo de dados para a campanha; permite campos extras.
+# Modelo de dados para a campanha.
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     
@@ -107,13 +130,15 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Função para fazer o upload da imagem a partir de um URL e retornar o resource name do asset.
-def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
+# Função para fazer o upload da imagem; se process=True, processa a imagem usando process_cover_photo.
+def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
     if response.status_code != 200:
         raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
     image_data = response.content
+    if process:
+        image_data = process_cover_photo(image_data)
     asset_service = client.get_service("AssetService")
     asset_operation = client.get_type("AssetOperation")
     asset = asset_operation.create
@@ -150,15 +175,15 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign.
+# Cria a Campaign (adicionando um sufixo único) e garantindo que o business_name seja igual ao campaign_name.
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
     campaign_operation = client.get_type("CampaignOperation")
     campaign = campaign_operation.create
-    # Certifique-se de que o business name será o mesmo do campaign name
-    campaign.name = data.campaign_name.strip()
-    logging.debug(f"Nome da campanha: {campaign.name}")
+    unique_campaign_name = f"{data.campaign_name.strip()}_{uuid.uuid4().hex[:6]}"
+    campaign.name = unique_campaign_name
+    logging.debug(f"Nome da campanha único: {campaign.name}")
     if data.campaign_type.upper() == "DISPLAY":
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
     else:
@@ -181,7 +206,7 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     ad_group_service = client.get_service("AdGroupService")
     ad_group_operation = client.get_type("AdGroupOperation")
     ad_group = ad_group_operation.create
-    ad_group.name = f"{data.campaign_name}_AdGroup_{uuid.uuid4()}"
+    ad_group.name = f"{data.campaign_name.strip()}_AdGroup_{uuid.uuid4().hex[:6]}"
     ad_group.campaign = campaign_resource_name
     ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
     ad_group.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
@@ -198,7 +223,6 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
     logging.info("Criando Display Keywords no Ad Group.")
     ad_group_criterion_service = client.get_service("AdGroupCriterionService")
     operations = []
-    
     def make_keyword_op(keyword_text: str):
         op = client.get_type("AdGroupCriterionOperation")
         criterion = op.create
@@ -207,11 +231,9 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         criterion.keyword.text = keyword_text
         criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
         return op
-    
     for kw in [data.keyword1, data.keyword2, data.keyword3]:
         if kw:
             operations.append(make_keyword_op(kw))
-    
     if operations:
         response = ad_group_criterion_service.mutate_ad_group_criteria(
             customer_id=customer_id, operations=operations
@@ -232,7 +254,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     
     # Headlines
     headline1 = client.get_type("AdTextAsset")
-    headline1.text = data.keyword1 if data.keyword1 else data.campaign_name
+    headline1.text = data.keyword1 if data.keyword1 else data.campaign_name.strip()
     ad.responsive_display_ad.headlines.append(headline1)
     
     headline2 = client.get_type("AdTextAsset")
@@ -252,39 +274,39 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
     
-    # Business name: será o mesmo que campaign_name.
+    # Business name: garante que seja igual ao campaign_name.
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
-    # Marketing image
+    # Marketing image (cover_photo): Processa a imagem para garantir a proporção 1.91:1.
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
-            marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo)
+            # Processa a imagem de capa para ajustar a proporção.
+            marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo, process=True)
         else:
             marketing_asset_resource = data.cover_photo
         img = client.get_type("AdImageAsset")
         img.asset = marketing_asset_resource
         ad.responsive_display_ad.marketing_images.append(img)
     else:
-        raise Exception("O campo 'cover_photo' está vazio. É necessário fornecer um URL ou resource name válido.")
+        raise Exception("O campo 'cover_photo' está vazio.")
     
     # Logo: sempre utiliza o asset padrão.
     logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
-        default_logo_path = "default.png"
+        default_logo_path = "default.png"  # Novo nome do arquivo de logotipo
         if not os.path.exists(default_logo_path):
-            raise Exception("Nenhum asset de logotipo foi fornecido, DEFAULT_LOGO_ASSET não está definida e o arquivo default.png não foi encontrado.")
-        with open(default_logo_path, "rb") as f:
-            image_data = f.read()
+            raise Exception("Arquivo de logotipo não encontrado e DEFAULT_LOGO_ASSET não definida.")
+        # Processa a imagem do logotipo para garantir que seja quadrada.
+        image_data = process_logo_image(default_logo_path)
         asset_service = client.get_service("AssetService")
         asset_operation = client.get_type("AssetOperation")
         asset = asset_operation.create
-        asset.name = f"Default_Logo_{uuid.uuid4()}"
+        asset.name = f"Default_Logo_{uuid.uuid4().hex[:6]}"
         asset.type_ = client.enums.AssetTypeEnum.IMAGE
         asset.image_asset.data = image_data
         mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
         logo_asset_resource = mutate_response.results[0].resource_name
-    
     logo = client.get_type("AdImageAsset")
     logo.asset = logo_asset_resource
     ad.responsive_display_ad.logo_images.append(logo)
@@ -296,12 +318,65 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
-# Aplica critérios de targeting à campanha (gênero, idade e dispositivos).
+# Função para processar a imagem do logotipo e garantir que seja quadrada.
+def process_logo_image(default_logo_path: str) -> bytes:
+    with Image.open(default_logo_path) as img:
+        width, height = img.size
+        min_dim = min(width, height)
+        left = (width - min_dim) / 2
+        top = (height - min_dim) / 2
+        right = (width + min_dim) / 2
+        bottom = (height + min_dim) / 2
+        img_cropped = img.crop((left, top, right, bottom))
+        img_resized = img_cropped.resize((300, 300))
+        buf = BytesIO()
+        img_resized.save(buf, format="PNG")
+        return buf.getvalue()
+
+# Função para processar a imagem de capa e garantir a proporção 1.91:1 com tamanho 1200x628.
+def process_cover_photo(image_data: bytes) -> bytes:
+    img = Image.open(BytesIO(image_data))
+    width, height = img.size
+    target_ratio = 1.91
+    current_ratio = width / height
+    if current_ratio > target_ratio:
+        new_width = int(height * target_ratio)
+        left = (width - new_width) // 2
+        img = img.crop((left, 0, left + new_width, height))
+    elif current_ratio < target_ratio:
+        new_height = int(width / target_ratio)
+        top = (height - new_height) // 2
+        img = img.crop((0, top, width, top + new_height))
+    img = img.resize((1200, 628))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+# Atualiza a função upload_image_asset para processar a imagem se necessário.
+def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
+    logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
+    response = requests.get(image_url)
+    if response.status_code != 200:
+        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
+    image_data = response.content
+    if process:
+        image_data = process_cover_photo(image_data)
+    asset_service = client.get_service("AssetService")
+    asset_operation = client.get_type("AssetOperation")
+    asset = asset_operation.create
+    asset.name = f"Image_asset_{uuid.uuid4()}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = image_data
+    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
+    resource_name = mutate_response.results[0].resource_name
+    logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
+    return resource_name
+
+# Aplica critérios de targeting à campanha.
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
-    # Gênero
     gender_mapping = {
         "MALE": client.enums.GenderTypeEnum.MALE,
         "FEMALE": client.enums.GenderTypeEnum.FEMALE
@@ -314,7 +389,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.gender.type_ = gender
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Idade – exemplo para faixa 18-24
     if data.audience_min_age <= 18 <= data.audience_max_age:
         op = client.get_type("CampaignCriterionOperation")
         criterion = op.create
@@ -322,7 +396,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         criterion.age_range.type_ = client.enums.AgeRangeTypeEnum.AGE_RANGE_18_24
         criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
         operations.append(op)
-    # Dispositivos
     device_mapping = {
         "SMARTPHONE": client.enums.DeviceEnum.MOBILE,
         "DESKTOP": client.enums.DeviceEnum.DESKTOP,
@@ -361,7 +434,6 @@ async def create_campaign(request_data: CampaignRequest):
     except Exception as e:
         logging.error("Erro ao inicializar Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-        
     try:
         customer_id = get_customer_id(client)
         logging.info(f"Customer ID obtido: {customer_id}")
