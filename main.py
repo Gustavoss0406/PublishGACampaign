@@ -23,7 +23,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Handler de lifespan via asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("Startup: A aplicação foi iniciada (via lifespan handler).")
@@ -32,7 +31,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Middleware CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Ajuste conforme necessário
@@ -41,23 +39,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Função para processar a imagem de capa para garantir a proporção 1.91:1 e tamanho 1200x628
+# Função para processar a imagem do logotipo e garantir que ela seja quadrada (300x300).
+def process_logo_image(default_logo_path: str) -> bytes:
+    with Image.open(default_logo_path) as img:
+        width, height = img.size
+        min_dim = min(width, height)
+        left = (width - min_dim) / 2
+        top = (height - min_dim) / 2
+        right = (width + min_dim) / 2
+        bottom = (height + min_dim) / 2
+        img_cropped = img.crop((left, top, right, bottom))
+        img_resized = img_cropped.resize((300, 300))
+        buf = BytesIO()
+        img_resized.save(buf, format="PNG")
+        return buf.getvalue()
+
+# Função para processar a imagem de capa para garantir a proporção 1.91:1 com tamanho 1200x628.
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     width, height = img.size
     target_ratio = 1.91
     current_ratio = width / height
     if current_ratio > target_ratio:
-        # Muito larga: recorta a largura
         new_width = int(height * target_ratio)
         left = (width - new_width) // 2
         img = img.crop((left, 0, left + new_width, height))
     elif current_ratio < target_ratio:
-        # Muito alta: recorta a altura
         new_height = int(width / target_ratio)
         top = (height - new_height) // 2
         img = img.crop((0, top, width, top + new_height))
-    # Redimensiona para 1200x628
     img = img.resize((1200, 628))
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -73,7 +83,7 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Remove '";' imediatamente antes de uma vírgula no campo cover_photo
+    # Remove '";' imediatamente antes de uma vírgula no campo cover_photo.
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -130,7 +140,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Função para fazer o upload da imagem; se process=True, processa a imagem usando process_cover_photo.
+# Função para fazer o upload da imagem; se process=True, processa a imagem de capa.
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
     logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
     response = requests.get(image_url)
@@ -175,7 +185,7 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     logging.info(f"Campaign Budget criado: {resource_name}")
     return resource_name
 
-# Cria a Campaign (adicionando um sufixo único) e garantindo que o business_name seja igual ao campaign_name.
+# Cria a Campaign (adicionando um sufixo único para evitar duplicatas).
 def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
     logging.info("Criando Campaign.")
     campaign_service = client.get_service("CampaignService")
@@ -274,14 +284,13 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
     
-    # Business name: garante que seja igual ao campaign_name.
+    # Business name: igual ao campaign_name.
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
-    # Marketing image (cover_photo): Processa a imagem para garantir a proporção 1.91:1.
+    # Marketing image (cover_photo)
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
-            # Processa a imagem de capa para ajustar a proporção.
             marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo, process=True)
         else:
             marketing_asset_resource = data.cover_photo
@@ -291,13 +300,12 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Logo: sempre utiliza o asset padrão.
+    # Logo: utiliza o asset padrão.
     logo_asset_resource = os.environ.get("DEFAULT_LOGO_ASSET")
     if not logo_asset_resource:
-        default_logo_path = "default.png"  # Novo nome do arquivo de logotipo
+        default_logo_path = "default.png"
         if not os.path.exists(default_logo_path):
             raise Exception("Arquivo de logotipo não encontrado e DEFAULT_LOGO_ASSET não definida.")
-        # Processa a imagem do logotipo para garantir que seja quadrada.
         image_data = process_logo_image(default_logo_path)
         asset_service = client.get_service("AssetService")
         asset_operation = client.get_type("AssetOperation")
@@ -318,7 +326,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
-# Função para processar a imagem do logotipo e garantir que seja quadrada.
+# Função para processar a imagem do logotipo e garantir que ela seja quadrada (300x300).
 def process_logo_image(default_logo_path: str) -> bytes:
     with Image.open(default_logo_path) as img:
         width, height = img.size
@@ -332,45 +340,6 @@ def process_logo_image(default_logo_path: str) -> bytes:
         buf = BytesIO()
         img_resized.save(buf, format="PNG")
         return buf.getvalue()
-
-# Função para processar a imagem de capa e garantir a proporção 1.91:1 com tamanho 1200x628.
-def process_cover_photo(image_data: bytes) -> bytes:
-    img = Image.open(BytesIO(image_data))
-    width, height = img.size
-    target_ratio = 1.91
-    current_ratio = width / height
-    if current_ratio > target_ratio:
-        new_width = int(height * target_ratio)
-        left = (width - new_width) // 2
-        img = img.crop((left, 0, left + new_width, height))
-    elif current_ratio < target_ratio:
-        new_height = int(width / target_ratio)
-        top = (height - new_height) // 2
-        img = img.crop((0, top, width, top + new_height))
-    img = img.resize((1200, 628))
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-# Atualiza a função upload_image_asset para processar a imagem se necessário.
-def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
-    logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
-    response = requests.get(image_url)
-    if response.status_code != 200:
-        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
-    image_data = response.content
-    if process:
-        image_data = process_cover_photo(image_data)
-    asset_service = client.get_service("AssetService")
-    asset_operation = client.get_type("AssetOperation")
-    asset = asset_operation.create
-    asset.name = f"Image_asset_{uuid.uuid4()}"
-    asset.type_ = client.enums.AssetTypeEnum.IMAGE
-    asset.image_asset.data = image_data
-    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-    resource_name = mutate_response.results[0].resource_name
-    logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
-    return resource_name
 
 # Aplica critérios de targeting à campanha.
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
