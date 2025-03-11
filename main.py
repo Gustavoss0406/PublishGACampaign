@@ -49,13 +49,10 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    
-    # Remove qualquer ocorrência de '";' imediatamente antes de uma vírgula, 
-    # por exemplo: "cover_photo": "https://...jpg?token=...";,  =>  "cover_photo": "https://...jpg?token=...", 
+    # Remove qualquer ocorrência de '";' imediatamente antes de uma vírgula no campo cover_photo
     body_text = re.sub(r'("cover_photo":\s*".+?)["\s;]+,', r'\1",', body_text)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
-    
     async def receive():
         return {"type": "http.request", "body": modified_body_bytes}
     request._receive = receive
@@ -72,6 +69,7 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str  # Pode ser um URL ou já o resource name do asset.
+    # Campo "logo_image" removido; usaremos sempre o asset padrão.
     keyword1: str
     keyword2: str
     keyword3: str
@@ -341,6 +339,49 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         )
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
+
+# Registrar a rota para "/create_campaign" e "/create_campaign/"
+@app.post("/create_campaign")
+async def create_campaign(request_data: CampaignRequest):
+    try:
+        config_dict = {
+            "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
+            "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
+            "client_secret": "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",
+            "refresh_token": request_data.refresh_token,
+            "use_proto_plus": True
+        }
+        logging.info("Inicializando Google Ads Client com o refresh token fornecido.")
+        client = GoogleAdsClient.load_from_dict(config_dict)
+        logging.debug("Google Ads Client inicializado com sucesso.")
+    except Exception as e:
+        logging.error("Erro ao inicializar Google Ads Client.", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    try:
+        customer_id = get_customer_id(client)
+        logging.info(f"Customer ID obtido: {customer_id}")
+        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
+        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
+        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
+        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
+        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
+        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
+        return {
+            "status": "success",
+            "campaign_resource_name": campaign_resource_name,
+            "ad_group_resource_name": ad_group_resource_name,
+            "ad_group_ad_resource_name": ad_group_ad_resource_name
+        }
+    except GoogleAdsException as ex:
+        logging.error("Erro na API do Google Ads.", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex}")
+    except Exception as ex:
+        logging.exception("Erro inesperado.")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+# Registrar rota com barra final
+app.post("/create_campaign/")(create_campaign)
 
 if __name__ == "__main__":
     import uvicorn
