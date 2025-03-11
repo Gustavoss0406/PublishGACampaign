@@ -42,15 +42,17 @@ app.add_middleware(
 def process_logo_image(logo_path: str) -> bytes:
     """
     Carrega o logotipo a partir do arquivo padrao.jpg.
-    Mesmo que o arquivo já tenha 1200x1200, ele é redimensionado e colado em uma nova imagem
-    para garantir que não haja metadados indesejados e que a imagem seja exatamente 1200x1200.
-    Se ocorrer algum erro, gera uma imagem branca de 1200x1200.
+    Mesmo que o arquivo já tenha 1200x1200, a imagem é reprocessada para
+    remover metadados e garantir exatamente 1200x1200 pixels.
+    Se houver erro, gera uma imagem branca de 1200x1200.
     """
     try:
         if os.path.exists(logo_path):
             with Image.open(logo_path) as img:
                 img = img.convert("RGB")
                 logging.debug(f"Logo original: {img.size}")
+                # Força a imagem a ter exatamente 1200x1200 usando ImageOps.fit
+                img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
             logging.warning(f"Arquivo {logo_path} não encontrado. Gerando logotipo em branco.")
             img = Image.new("RGB", (1200, 1200), (255, 255, 255))
@@ -58,17 +60,11 @@ def process_logo_image(logo_path: str) -> bytes:
         logging.error(f"Erro ao abrir {logo_path}: {e}. Gerando logotipo em branco.")
         img = Image.new("RGB", (1200, 1200), (255, 255, 255))
     
-    # Redimensiona para exatamente 1200x1200
-    img = img.resize((1200, 1200))
-    logging.debug(f"Logo redimensionada: {img.size}")
-    # Cria uma nova imagem em branco e cola a logo redimensionada nela
-    new_img = Image.new("RGB", (1200, 1200), (255, 255, 255))
-    new_img.paste(img, (0, 0))
-    logging.debug(f"Logo final: {new_img.size}")
     buf = BytesIO()
-    new_img.save(buf, format="PNG")
+    # Salva a imagem otimizando-a para remover metadados
+    img.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
-    logging.debug(f"Logo processada (bytes): {len(processed_data)}")
+    logging.debug(f"Logo processada: tamanho {img.size}, {len(processed_data)} bytes")
     return processed_data
 
 def process_cover_photo(image_data: bytes) -> bytes:
@@ -87,7 +83,7 @@ def process_cover_photo(image_data: bytes) -> bytes:
         img = img.crop((0, top, width, top + new_height))
     img = img.resize((1200, 628))
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
     logging.debug(f"Cover processada: tamanho 1200x628, {len(processed_data)} bytes")
     return processed_data
@@ -104,7 +100,7 @@ def process_square_image(image_data: bytes) -> bytes:
     img_cropped = img.crop((left, top, right, bottom))
     img_resized = img_cropped.resize((1200, 1200))
     buf = BytesIO()
-    img_resized.save(buf, format="PNG")
+    img_resized.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
     logging.debug(f"Imagem quadrada processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
     return processed_data
@@ -370,7 +366,6 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     asset.name = f"Logo_{uuid.uuid4().hex[:6]}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
     asset.image_asset.data = image_data
-    # Define explicitamente o mime type para IMAGE_PNG
     asset.image_asset.mime_type = client.enums.MimeTypeEnum.IMAGE_PNG
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
     logo_asset_resource = mutate_response.results[0].resource_name
