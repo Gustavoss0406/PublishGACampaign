@@ -50,7 +50,7 @@ def process_logo_image(logo_path: str) -> bytes:
             with Image.open(logo_path) as img:
                 img = img.convert("RGB")
                 logging.debug(f"Logo original: {img.size}")
-                # Garantir que a imagem esteja em 1200x1200 (caso não esteja, redimensiona)
+                # Se não estiver 1200x1200, forçamos a dimensão
                 if img.size != (1200, 1200):
                     img = ImageOps.fit(img, (1200, 1200), method=Image.LANCZOS)
         else:
@@ -356,7 +356,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
-    # Utiliza o logotipo a partir do arquivo padrao.jpg, que tem exatamente 1200x1200
+    # Usa o logotipo a partir do arquivo padrao.jpg (com 1200x1200)
     logo_path = "padrao.jpg"
     image_data = process_logo_image(logo_path)
     asset_service = client.get_service("AssetService")
@@ -365,6 +365,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     asset.name = f"Logo_{uuid.uuid4().hex[:6]}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
     asset.image_asset.data = image_data
+    # Define explicitamente o mime type para evitar erro de campo obrigatório
+    asset.image_asset.mime_type = client.enums.MimeTypeEnum.IMAGE_PNG
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
     logo_asset_resource = mutate_response.results[0].resource_name
     logging.debug(f"Logo asset resource obtido: {logo_asset_resource}")
