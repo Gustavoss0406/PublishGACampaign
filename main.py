@@ -175,6 +175,7 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str
+    final_url: str  # Novo campo para a URL final
     keyword1: str
     keyword2: str
     keyword3: str
@@ -303,7 +304,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad_group_ad.ad_group = ad_group_resource_name
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
     ad = ad_group_ad.ad
-    ad.final_urls.append("https://example.com")
+    # Agora a URL final é obtida do campo final_url do JSON
+    ad.final_urls.append(data.final_url)
     
     # Headlines (títulos curtos)
     headline1 = client.get_type("AdTextAsset")
@@ -364,16 +366,17 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
+# Como vamos aplicar apenas a segmentação por gênero,
+# utilizamos a abordagem de exclusão: se o usuário deseja atingir um determinado gênero,
+# excluímos os outros.
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
-    # Apenas o critério de gênero será aplicado.
-    # Para segmentar apenas um gênero, usamos exclusões para remover os outros.
     if data.audience_gender and data.audience_gender.upper() in ["MALE", "FEMALE"]:
         desired_gender = data.audience_gender.upper()
-        # Se queremos atingir apenas MALE, excluímos FEMALE e UNDETERMINED.
-        # Se queremos atingir apenas FEMALE, excluímos MALE e UNDETERMINED.
+        # Se deseja atingir somente MALE, excluímos FEMALE e UNDETERMINED.
+        # Se deseja atingir somente FEMALE, excluímos MALE e UNDETERMINED.
         if desired_gender == "MALE":
             exclusions = ["FEMALE", "UNDETERMINED"]
         else:
@@ -383,7 +386,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
             criterion = op.create
             criterion.campaign = campaign_resource_name
             criterion.gender.type_ = client.enums.GenderTypeEnum[gender_to_exclude]
-            # Aqui usamos negative=True para excluir o gênero indesejado
+            # Usamos negative=True para excluir o gênero indesejado
             criterion.negative = True
             criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
             operations.append(op)
