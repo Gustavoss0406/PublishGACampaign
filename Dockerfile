@@ -13,15 +13,14 @@ COPY . /app
 # Cria o ambiente virtual na pasta /opt/venv
 RUN python -m venv --copies /opt/venv
 
-# Define a variável de ambiente para usar o distutils da biblioteca padrão (opcional)
+# (Opcional) Define a variável para forçar o uso do distutils padrão
 ENV SETUPTOOLS_USE_DISTUTILS=stdlib
 
-# Ativa o ambiente virtual, atualiza pip e wheel, força o setuptools para a versão 65.5.0, instala o Cython e as dependências
+# Ativa o ambiente virtual, atualiza pip, setuptools e wheel, instala o Cython e as dependências
 RUN . /opt/venv/bin/activate && \
-    pip install --upgrade pip wheel && \
-    pip install setuptools==65.5.0 && \
+    pip install --upgrade pip setuptools wheel && \
     pip install Cython && \
-    pip install -r requirements.txt
+    pip install --no-use-pep517 -r requirements.txt
 
 # Comando para iniciar a aplicação (ajuste "main:app" conforme o seu código)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
