@@ -13,8 +13,8 @@ COPY . /app
 # Cria o ambiente virtual na pasta /opt/venv
 RUN python -m venv --copies /opt/venv
 
-# (Opcional) Força o uso do distutils da biblioteca padrão
-ENV SETUPTOOLS_USE_DISTUTILS=stdlib
+# (Opcional) Se você tiver definido essa variável, remova-a ou comente-a
+# ENV SETUPTOOLS_USE_DISTUTILS=stdlib
 
 # Ativa o ambiente virtual, atualiza pip, setuptools e wheel, instala Cython e as dependências
 RUN . /opt/venv/bin/activate && \
