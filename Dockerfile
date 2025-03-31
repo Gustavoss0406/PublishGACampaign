@@ -1,8 +1,8 @@
 # Usa uma imagem base com Python 3.12 (versão slim para manter a imagem leve)
 FROM python:3.12-slim
 
-# Instala dependências do sistema necessárias para compilar pacotes
-RUN apt-get update && apt-get install -y build-essential
+# Instala dependências do sistema necessárias para compilar pacotes (build-essential e libyaml-dev)
+RUN apt-get update && apt-get install -y build-essential libyaml-dev
 
 # Define o diretório de trabalho dentro do contêiner
 WORKDIR /app
@@ -13,14 +13,14 @@ COPY . /app
 # Cria o ambiente virtual na pasta /opt/venv
 RUN python -m venv --copies /opt/venv
 
-# (Opcional) Define a variável para forçar o uso do distutils padrão
+# (Opcional) Força o uso do distutils da biblioteca padrão
 ENV SETUPTOOLS_USE_DISTUTILS=stdlib
 
-# Ativa o ambiente virtual, atualiza pip, setuptools e wheel, instala o Cython e as dependências
+# Ativa o ambiente virtual, atualiza pip, setuptools e wheel, instala Cython e as dependências
 RUN . /opt/venv/bin/activate && \
     pip install --upgrade pip setuptools wheel && \
     pip install Cython && \
-    pip install --no-use-pep517 -r requirements.txt
+    pip install -r requirements.txt
 
 # Comando para iniciar a aplicação (ajuste "main:app" conforme o seu código)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
