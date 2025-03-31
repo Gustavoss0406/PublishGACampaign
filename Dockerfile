@@ -13,12 +13,13 @@ COPY . /app
 # Cria o ambiente virtual na pasta /opt/venv
 RUN python -m venv --copies /opt/venv
 
-# (Opcional) Define a variável de ambiente para usar o distutils da biblioteca padrão
+# Define a variável de ambiente para usar o distutils da biblioteca padrão (opcional)
 ENV SETUPTOOLS_USE_DISTUTILS=stdlib
 
-# Ativa o ambiente virtual, atualiza pip, setuptools e wheel, instala Cython e as dependências
+# Ativa o ambiente virtual, atualiza pip e wheel, força o setuptools para a versão 65.5.0, instala o Cython e as dependências
 RUN . /opt/venv/bin/activate && \
-    pip install --upgrade pip setuptools wheel && \
+    pip install --upgrade pip wheel && \
+    pip install setuptools==65.5.0 && \
     pip install Cython && \
     pip install -r requirements.txt
 
