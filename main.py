@@ -6,7 +6,7 @@ import re
 import asyncio
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
@@ -15,7 +15,7 @@ import requests
 from PIL import Image, ImageOps
 from io import BytesIO
 
-# Configuração de logs detalhados
+# Configuração de logs
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -24,21 +24,22 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.info("Startup: A aplicação foi iniciada (via lifespan handler).")
+    logging.info("Startup: Aplicação iniciada.")
     yield
-    logging.info("Shutdown: A aplicação está sendo encerrada (via lifespan handler).")
+    logging.info("Shutdown: Aplicação encerrada.")
 
 app = FastAPI(lifespan=lifespan)
 
-# Configuração de CORS para permitir todas as origens, métodos e cabeçalhos
+# Middleware CORS para permitir todas as origens, métodos e cabeçalhos (para teste)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, substitua "*" pelos domínios autorizados.
+    allow_origins=["*"],  # Em produção, defina as origens permitidas
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos os métodos (incluindo OPTIONS)
-    allow_headers=["*"],  # Permite todos os cabeçalhos
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# Funções de processamento de imagem (sem alteração)
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     width, height = img.size
@@ -57,7 +58,7 @@ def process_cover_photo(image_data: bytes) -> bytes:
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
-    logging.debug(f"Cover processada: tamanho 1200x628, {len(processed_data)} bytes")
+    logging.debug(f"Cover processada: 1200x628, {len(processed_data)} bytes")
     return processed_data
 
 def process_square_image(image_data: bytes) -> bytes:
@@ -72,14 +73,14 @@ def process_square_image(image_data: bytes) -> bytes:
     buf = BytesIO()
     img_resized.save(buf, format="PNG", optimize=True)
     processed_data = buf.getvalue()
-    logging.debug(f"Imagem quadrada processada: tamanho {img_resized.size}, {len(processed_data)} bytes")
+    logging.debug(f"Imagem quadrada processada: {img_resized.size}, {len(processed_data)} bytes")
     return processed_data
 
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
-    logging.info(f"Fazendo download da imagem a partir do URL: {image_url}")
+    logging.info(f"Download da imagem: {image_url}")
     response = requests.get(image_url)
     if response.status_code != 200:
-        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
+        raise Exception(f"Falha no download da imagem. Status: {response.status_code}")
     image_data = response.content
     if process:
         image_data = process_cover_photo(image_data)
@@ -91,14 +92,14 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
     asset.image_asset.data = image_data
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
     resource_name = mutate_response.results[0].resource_name
-    logging.info(f"Imagem enviada com sucesso. Resource name: {resource_name}")
+    logging.info(f"Imagem enviada: {resource_name}")
     return resource_name
 
 def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
-    logging.info(f"Fazendo download da imagem quadrada a partir do URL: {image_url}")
+    logging.info(f"Download da imagem quadrada: {image_url}")
     response = requests.get(image_url)
     if response.status_code != 200:
-        raise Exception(f"Falha ao fazer download da imagem. Status: {response.status_code}")
+        raise Exception(f"Falha no download da imagem. Status: {response.status_code}")
     image_data = response.content
     processed_data = process_square_image(image_data)
     asset_service = client.get_service("AssetService")
@@ -109,7 +110,7 @@ def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_u
     asset.image_asset.data = processed_data
     mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
     resource_name = mutate_response.results[0].resource_name
-    logging.info(f"Imagem quadrada enviada com sucesso. Resource name: {resource_name}")
+    logging.info(f"Imagem quadrada enviada: {resource_name}")
     return resource_name
 
 def get_customer_id(client: GoogleAdsClient) -> str:
@@ -118,31 +119,28 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     if not accessible_customers.resource_names:
         raise Exception("Nenhum customer acessível encontrado.")
     resource_name = accessible_customers.resource_names[0]
-    logging.debug(f"Accessible customer: {resource_name}")
+    logging.debug(f"Customer acessível: {resource_name}")
     return resource_name.split("/")[-1]
 
-# Middleware otimizado para evitar processamento pesado em requisições OPTIONS
+# Middleware otimizado para evitar processamento pesado em OPTIONS
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     if request.method.upper() == "OPTIONS":
         return await call_next(request)
-    logging.info(f"Recebendo request: {request.method} {request.url}")
-    logging.debug(f"Request headers: {request.headers}")
+    logging.info(f"Recebendo {request.method} {request.url}")
     body_bytes = await request.body()
     try:
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
-    # Processa a limpeza do campo cover_photo
+    # Limpeza rápida do campo cover_photo
     body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
-    logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
     
     async def receive():
         return {"type": "http.request", "body": modified_body_bytes}
     request._receive = receive
     response = await call_next(request)
-    logging.info(f"Response status: {response.status_code} para {request.method} {request.url}")
     return response
 
 class CampaignRequest(BaseModel):
@@ -178,9 +176,7 @@ class CampaignRequest(BaseModel):
 
     @field_validator("audience_min_age", "audience_max_age", mode="before")
     def convert_age(cls, value):
-        if isinstance(value, str):
-            return int(value)
-        return value
+        return int(value) if isinstance(value, str) else value
 
     @field_validator("cover_photo", mode="before")
     def clean_cover_photo(cls, value):
@@ -188,10 +184,11 @@ class CampaignRequest(BaseModel):
             cleaned = value.strip().rstrip(" ;")
             if cleaned and not urlparse(cleaned).scheme:
                 cleaned = "http://" + cleaned
-            logging.debug(f"Cover photo após limpeza: {cleaned}")
+            logging.debug(f"Cover photo limpa: {cleaned}")
             return cleaned
         return value
 
+# Funções para criação de campanha (sem alterações na lógica)
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
     logging.info("Criando Campaign Budget.")
     campaign_budget_service = client.get_service("CampaignBudgetService")
@@ -200,7 +197,6 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_mic
     campaign_budget.name = f"Budget_{uuid.uuid4()}"
     campaign_budget.amount_micros = budget_micros
     campaign_budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
-    logging.debug(f"Budget object: {campaign_budget}")
     response = campaign_budget_service.mutate_campaign_budgets(
         customer_id=customer_id, operations=[campaign_budget_operation]
     )
@@ -215,7 +211,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign = campaign_operation.create
     unique_campaign_name = f"{data.campaign_name.strip()}_{uuid.uuid4().hex[:6]}"
     campaign.name = unique_campaign_name
-    logging.debug(f"Nome da campanha único: {campaign.name}")
     if data.campaign_type.upper() == "DISPLAY":
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
     else:
@@ -225,7 +220,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     campaign.start_date = data.start_date
     campaign.end_date = data.end_date
     campaign.manual_cpc = client.get_type("ManualCpc")
-    logging.debug(f"Campaign object: {campaign}")
     response = campaign_service.mutate_campaigns(
         customer_id=customer_id, operations=[campaign_operation]
     )
@@ -243,7 +237,6 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
     ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
     ad_group.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
     ad_group.cpc_bid_micros = 1_000_000
-    logging.debug(f"Ad Group object: {ad_group}")
     response = ad_group_service.mutate_ad_groups(
         customer_id=customer_id, operations=[ad_group_operation]
     )
@@ -262,7 +255,6 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group
         criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
         criterion.keyword.text = keyword_text
         criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
-        logging.debug(f"Keyword object: {criterion.keyword}")
         return op
     for kw in [data.keyword1, data.keyword2, data.keyword3]:
         if kw:
@@ -282,41 +274,32 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad_group_ad.ad_group = ad_group_resource_name
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
     ad = ad_group_ad.ad
-    # Define a URL final a partir do campo 'final_url'
     ad.final_urls.append(data.final_url)
     
     # Headlines
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name.strip()
     ad.responsive_display_ad.headlines.append(headline1)
-    logging.debug(f"Headline 1: {headline1.text}")
     
     headline2 = client.get_type("AdTextAsset")
     headline2.text = data.keyword2
     ad.responsive_display_ad.headlines.append(headline2)
-    logging.debug(f"Headline 2: {headline2.text}")
     
     headline3 = client.get_type("AdTextAsset")
     headline3.text = data.keyword3
     ad.responsive_display_ad.headlines.append(headline3)
-    logging.debug(f"Headline 3: {headline3.text}")
     
     # Descrições
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
-    logging.debug(f"Descrição 1: {desc1.text}")
     
     desc2 = client.get_type("AdTextAsset")
     desc2.text = data.objective
     ad.responsive_display_ad.descriptions.append(desc2)
-    logging.debug(f"Descrição 2: {desc2.text}")
     
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
-    logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
-    
     ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
-    logging.debug(f"Long Headline definido: {ad.responsive_display_ad.long_headline.text}")
     
     if data.cover_photo:
         if data.cover_photo.startswith("http"):
@@ -328,11 +311,9 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
         img = client.get_type("AdImageAsset")
         img.asset = marketing_asset_resource
         ad.responsive_display_ad.marketing_images.append(img)
-        logging.debug(f"Marketing image asset: {img.asset}")
         square_img = client.get_type("AdImageAsset")
         square_img.asset = square_asset_resource
         ad.responsive_display_ad.square_marketing_images.append(square_img)
-        logging.debug(f"Square marketing image asset: {square_img.asset}")
     else:
         raise Exception("O campo 'cover_photo' está vazio.")
     
@@ -365,12 +346,30 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
 
+# Endpoint de Health Check
 @app.get("/")
 async def health_check():
     return {"status": "ok"}
 
+# Função de processamento pesado em background
+def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest):
+    try:
+        customer_id = get_customer_id(client)
+        logging.info(f"Customer ID: {customer_id}")
+        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
+        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
+        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
+        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
+        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
+        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
+        # Aqui você pode armazenar o resultado em um banco ou cache para consulta futura
+        logging.info("Processamento da campanha concluído com sucesso.")
+    except Exception as e:
+        logging.exception("Erro durante o processamento da campanha.")
+
+# Endpoint que dispara o processamento em background
 @app.post("/create_campaign")
-async def create_campaign(request_data: CampaignRequest):
+async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
     try:
         config_dict = {
             "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
@@ -379,37 +378,17 @@ async def create_campaign(request_data: CampaignRequest):
             "refresh_token": request_data.refresh_token,
             "use_proto_plus": True
         }
-        logging.info("Inicializando Google Ads Client com o refresh token fornecido.")
+        logging.info("Inicializando Google Ads Client.")
         client = GoogleAdsClient.load_from_dict(config_dict)
-        logging.debug("Google Ads Client inicializado com sucesso.")
     except Exception as e:
-        logging.error("Erro ao inicializar Google Ads Client.", exc_info=True)
+        logging.error("Erro ao inicializar o Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-    try:
-        # Executa as operações bloqueantes em threads separadas para agilizar a resposta
-        customer_id = await asyncio.to_thread(get_customer_id, client)
-        logging.info(f"Customer ID obtido: {customer_id}")
-        budget_resource_name = await asyncio.to_thread(create_campaign_budget, client, customer_id, request_data.budget)
-        campaign_resource_name = await asyncio.to_thread(create_campaign_resource, client, customer_id, budget_resource_name, request_data)
-        ad_group_resource_name = await asyncio.to_thread(create_ad_group, client, customer_id, campaign_resource_name, request_data)
-        await asyncio.to_thread(create_ad_group_keywords, client, customer_id, ad_group_resource_name, request_data)
-        ad_group_ad_resource_name = await asyncio.to_thread(create_responsive_display_ad, client, customer_id, ad_group_resource_name, request_data)
-        await asyncio.to_thread(apply_targeting_criteria, client, customer_id, campaign_resource_name, request_data)
-        return {
-            "status": "success",
-            "campaign_resource_name": campaign_resource_name,
-            "ad_group_resource_name": ad_group_resource_name,
-            "ad_group_ad_resource_name": ad_group_ad_resource_name
-        }
-    except GoogleAdsException as ex:
-        logging.error(f"Erro na API do Google Ads: {ex.failure}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"GoogleAdsException: {ex.failure}")
-    except Exception as ex:
-        logging.exception("Erro inesperado.")
-        raise HTTPException(status_code=500, detail=str(ex))
+    # Adiciona a tarefa em background para processar a campanha
+    background_tasks.add_task(process_campaign_task, client, request_data)
+    return {"status": "processing"}  # Responde imediatamente
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    logging.info(f"Iniciando a aplicação com uvicorn no host 0.0.0.0 e porta {port}.")
+    logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}.")
     uvicorn.run(app, host="0.0.0.0", port=port)
