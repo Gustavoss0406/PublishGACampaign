@@ -15,7 +15,7 @@ import requests
 from PIL import Image, ImageOps
 from io import BytesIO
 
-# Configuração de logs
+# Configuração de logs detalhados
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -30,16 +30,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Middleware CORS para permitir todas as origens, métodos e cabeçalhos (para teste)
+# Configuração de CORS para permitir todas as origens, métodos e cabeçalhos (para teste)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, defina as origens permitidas
+    allow_origins=["*"],  # Em produção, defina as origens permitidas.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Funções de processamento de imagem (sem alteração)
+# Funções de processamento de imagem
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     width, height = img.size
@@ -122,7 +122,7 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     logging.debug(f"Customer acessível: {resource_name}")
     return resource_name.split("/")[-1]
 
-# Middleware otimizado para evitar processamento pesado em OPTIONS
+# Middleware otimizado: Se a requisição for OPTIONS, ela passa imediatamente
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     if request.method.upper() == "OPTIONS":
@@ -188,7 +188,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return value
 
-# Funções para criação de campanha (sem alterações na lógica)
+# Funções para criação de campanha
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
     logging.info("Criando Campaign Budget.")
     campaign_budget_service = client.get_service("CampaignBudgetService")
@@ -351,7 +351,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
 async def health_check():
     return {"status": "ok"}
 
-# Função de processamento pesado em background
+# Função para processamento pesado em background
 def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest):
     try:
         customer_id = get_customer_id(client)
@@ -362,7 +362,6 @@ def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest
         create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
         ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
         apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
-        # Aqui você pode armazenar o resultado em um banco ou cache para consulta futura
         logging.info("Processamento da campanha concluído com sucesso.")
     except Exception as e:
         logging.exception("Erro durante o processamento da campanha.")
@@ -383,12 +382,13 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     except Exception as e:
         logging.error("Erro ao inicializar o Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-    # Adiciona a tarefa em background para processar a campanha
+    # Adiciona a tarefa de processamento em background
     background_tasks.add_task(process_campaign_task, client, request_data)
-    return {"status": "processing"}  # Responde imediatamente
+    return {"status": "processing"}  # Resposta imediata
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))
+    # Use a porta definida na variável de ambiente PORT; se não estiver definida, use 8000 (para testes locais)
+    port = int(os.environ.get("PORT", 8000))
     logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}.")
     uvicorn.run(app, host="0.0.0.0", port=port)
