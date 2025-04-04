@@ -366,17 +366,12 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     logging.info(f"Responsive Display Ad criado: {resource_name}")
     return resource_name
 
-# Como vamos aplicar apenas a segmentação por gênero,
-# utilizamos a abordagem de exclusão: se o usuário deseja atingir um determinado gênero,
-# excluímos os outros.
 def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
     logging.info("Aplicando targeting na Campaign.")
     campaign_criterion_service = client.get_service("CampaignCriterionService")
     operations = []
     if data.audience_gender and data.audience_gender.upper() in ["MALE", "FEMALE"]:
         desired_gender = data.audience_gender.upper()
-        # Se deseja atingir somente MALE, excluímos FEMALE e UNDETERMINED.
-        # Se deseja atingir somente FEMALE, excluímos MALE e UNDETERMINED.
         if desired_gender == "MALE":
             exclusions = ["FEMALE", "UNDETERMINED"]
         else:
@@ -386,7 +381,6 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
             criterion = op.create
             criterion.campaign = campaign_resource_name
             criterion.gender.type_ = client.enums.GenderTypeEnum[gender_to_exclude]
-            # Usamos negative=True para excluir o gênero indesejado
             criterion.negative = True
             criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
             operations.append(op)
@@ -396,6 +390,10 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
         )
         for result in response.results:
             logging.info(f"Campaign Criterion criado: {result.resource_name}")
+
+@app.get("/")
+async def health_check():
+    return {"status": "ok"}
 
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest):
@@ -434,8 +432,6 @@ async def create_campaign(request_data: CampaignRequest):
     except Exception as ex:
         logging.exception("Erro inesperado.")
         raise HTTPException(status_code=500, detail=str(ex))
-
-app.post("/create_campaign/")(create_campaign)
 
 if __name__ == "__main__":
     import uvicorn
