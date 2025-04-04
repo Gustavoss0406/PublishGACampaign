@@ -3,6 +3,7 @@ import sys
 import uuid
 import os
 import re
+import asyncio
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
@@ -120,8 +121,11 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     logging.debug(f"Accessible customer: {resource_name}")
     return resource_name.split("/")[-1]
 
+# Middleware otimizado para evitar processamento pesado em requisições OPTIONS
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
     logging.info(f"Recebendo request: {request.method} {request.url}")
     logging.debug(f"Request headers: {request.headers}")
     body_bytes = await request.body()
@@ -129,6 +133,7 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
+    # Processa a limpeza do campo cover_photo
     body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
     logging.info(f"Request body (modificado): {body_text}")
     modified_body_bytes = body_text.encode("utf-8")
@@ -381,14 +386,15 @@ async def create_campaign(request_data: CampaignRequest):
         logging.error("Erro ao inicializar Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     try:
-        customer_id = get_customer_id(client)
+        # Executa as operações bloqueantes em threads separadas para agilizar a resposta
+        customer_id = await asyncio.to_thread(get_customer_id, client)
         logging.info(f"Customer ID obtido: {customer_id}")
-        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
-        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
-        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
-        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
-        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
-        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
+        budget_resource_name = await asyncio.to_thread(create_campaign_budget, client, customer_id, request_data.budget)
+        campaign_resource_name = await asyncio.to_thread(create_campaign_resource, client, customer_id, budget_resource_name, request_data)
+        ad_group_resource_name = await asyncio.to_thread(create_ad_group, client, customer_id, campaign_resource_name, request_data)
+        await asyncio.to_thread(create_ad_group_keywords, client, customer_id, ad_group_resource_name, request_data)
+        ad_group_ad_resource_name = await asyncio.to_thread(create_responsive_display_ad, client, customer_id, ad_group_resource_name, request_data)
+        await asyncio.to_thread(apply_targeting_criteria, client, customer_id, campaign_resource_name, request_data)
         return {
             "status": "success",
             "campaign_resource_name": campaign_resource_name,
