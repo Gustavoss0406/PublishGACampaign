@@ -6,6 +6,7 @@ import re
 import asyncio
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
@@ -38,6 +39,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Função para converter data do formato MM/DD/YYYY para YYYYMMDD
+def format_date(date_str: str) -> str:
+    # Exemplo: "04/04/2025" -> "20250404"
+    try:
+        dt = datetime.strptime(date_str, "%m/%d/%Y")
+        return dt.strftime("%Y%m%d")
+    except Exception as e:
+        logging.error(f"Erro ao formatar data '{date_str}': {e}")
+        raise
+
+# Função para calcular a quantidade de dias entre duas datas (formato MM/DD/YYYY)
+def days_between(start_date: str, end_date: str) -> int:
+    try:
+        dt_start = datetime.strptime(start_date, "%m/%d/%Y")
+        dt_end = datetime.strptime(end_date, "%m/%d/%Y")
+        delta = dt_end - dt_start
+        return delta.days + 1  # +1 para incluir o dia final
+    except Exception as e:
+        logging.error(f"Erro ao calcular intervalo entre '{start_date}' e '{end_date}': {e}")
+        raise
 
 # Funções de processamento de imagem
 def process_cover_photo(image_data: bytes) -> bytes:
@@ -155,9 +177,9 @@ class CampaignRequest(BaseModel):
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int
-    start_date: str
-    end_date: str
+    budget: int  # Valor total em reais
+    start_date: str  # No formato MM/DD/YYYY
+    end_date: str    # No formato MM/DD/YYYY
     price_model: str
     campaign_type: str
     audience_gender: str
@@ -171,7 +193,7 @@ class CampaignRequest(BaseModel):
             value = value.replace("$", "").strip()
             numeric_value = float(value)
             logging.debug(f"Budget convertido: {numeric_value}")
-            return int(numeric_value * 1_000_000)
+            return int(numeric_value)
         return value
 
     @field_validator("audience_min_age", "audience_max_age", mode="before")
@@ -189,13 +211,20 @@ class CampaignRequest(BaseModel):
         return value
 
 # Funções para criação de campanha
-def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_micros: int) -> str:
-    logging.info("Criando Campaign Budget.")
+def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_total: int, start_date: str, end_date: str) -> str:
+    # Calcula o budget diário e converte para micros
+    days = days_between(start_date, end_date)
+    if days <= 0:
+        raise Exception("Intervalo de datas inválido.")
+    daily_budget = budget_total / days
+    daily_budget_micros = int(daily_budget * 1_000_000)
+    logging.info(f"Budget diário: {daily_budget} reais, {daily_budget_micros} micros (para {days} dias)")
+    
     campaign_budget_service = client.get_service("CampaignBudgetService")
     campaign_budget_operation = client.get_type("CampaignBudgetOperation")
     campaign_budget = campaign_budget_operation.create
     campaign_budget.name = f"Budget_{uuid.uuid4()}"
-    campaign_budget.amount_micros = budget_micros
+    campaign_budget.amount_micros = daily_budget_micros
     campaign_budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
     response = campaign_budget_service.mutate_campaign_budgets(
         customer_id=customer_id, operations=[campaign_budget_operation]
@@ -217,8 +246,9 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
     campaign.status = client.enums.CampaignStatusEnum.ENABLED
     campaign.campaign_budget = budget_resource_name
-    campaign.start_date = data.start_date
-    campaign.end_date = data.end_date
+    # Formata as datas para o formato YYYYMMDD exigido pelo Google Ads
+    campaign.start_date = format_date(data.start_date)
+    campaign.end_date = format_date(data.end_date)
     campaign.manual_cpc = client.get_type("ManualCpc")
     response = campaign_service.mutate_campaigns(
         customer_id=customer_id, operations=[campaign_operation]
@@ -356,7 +386,7 @@ def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest
     try:
         customer_id = get_customer_id(client)
         logging.info(f"Customer ID: {customer_id}")
-        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget)
+        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget, request_data.start_date, request_data.end_date)
         campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
         ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
         create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
