@@ -3,9 +3,7 @@ import sys
 import uuid
 import os
 import re
-import json
 from contextlib import asynccontextmanager
-from typing import Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,30 +37,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def process_logo_image(logo_path: str) -> bytes:
-    """
-    Carrega o logotipo a partir do arquivo padrao.jpg.
-    Assume que o arquivo já possui exatamente 1200x1200 pixels.
-    Apenas remove metadados e converte para JPEG.
-    (Esta função não será utilizada, pois removemos o logo.)
-    """
-    try:
-        if not os.path.exists(logo_path):
-            raise FileNotFoundError(f"Arquivo {logo_path} não encontrado.")
-        with Image.open(logo_path) as img:
-            img = ImageOps.exif_transpose(img).convert("RGB")
-            logging.debug(f"Logo original: {img.size}")
-            if img.size != (1200, 1200):
-                raise ValueError("A imagem do logotipo deve ter exatamente 1200x1200 pixels.")
-            buf = BytesIO()
-            img.save(buf, format="JPEG", quality=95)
-            processed_data = buf.getvalue()
-            logging.debug(f"Logo processada: tamanho {img.size}, {len(processed_data)} bytes")
-            return processed_data
-    except Exception as e:
-        logging.error(f"Erro ao processar o logotipo: {e}")
-        raise
-
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     width, height = img.size
@@ -91,9 +65,7 @@ def process_square_image(image_data: bytes) -> bytes:
     min_dim = min(width, height)
     left = (width - min_dim) // 2
     top = (height - min_dim) // 2
-    right = left + min_dim
-    bottom = top + min_dim
-    img_cropped = img.crop((left, top, right, bottom))
+    img_cropped = img.crop((left, top, left + min_dim, top + min_dim))
     img_resized = img_cropped.resize((1200, 1200))
     buf = BytesIO()
     img_resized.save(buf, format="PNG", optimize=True)
@@ -175,7 +147,7 @@ class CampaignRequest(BaseModel):
     campaign_description: str
     objective: str
     cover_photo: str
-    final_url: str  # Novo campo para a URL final
+    final_url: str
     keyword1: str
     keyword2: str
     keyword3: str
@@ -304,10 +276,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad_group_ad.ad_group = ad_group_resource_name
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
     ad = ad_group_ad.ad
-    # Agora a URL final é obtida do campo final_url do JSON
     ad.final_urls.append(data.final_url)
     
-    # Headlines (títulos curtos)
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name.strip()
     ad.responsive_display_ad.headlines.append(headline1)
@@ -323,7 +293,6 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.headlines.append(headline3)
     logging.debug(f"Headline 3: {headline3.text}")
     
-    # Descrições
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
@@ -337,7 +306,6 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     logging.debug(f"Business name definido: {ad.responsive_display_ad.business_name}")
     
-    # Campo obrigatório: Long Headline
     ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
     logging.debug(f"Long Headline definido: {ad.responsive_display_ad.long_headline.text}")
     
@@ -372,10 +340,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign
     operations = []
     if data.audience_gender and data.audience_gender.upper() in ["MALE", "FEMALE"]:
         desired_gender = data.audience_gender.upper()
-        if desired_gender == "MALE":
-            exclusions = ["FEMALE", "UNDETERMINED"]
-        else:
-            exclusions = ["MALE", "UNDETERMINED"]
+        exclusions = ["FEMALE", "UNDETERMINED"] if desired_gender == "MALE" else ["MALE", "UNDETERMINED"]
         for gender_to_exclude in exclusions:
             op = client.get_type("CampaignCriterionOperation")
             criterion = op.create
