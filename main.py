@@ -42,7 +42,6 @@ app.add_middleware(
 
 # Função para converter data do formato MM/DD/YYYY para YYYYMMDD
 def format_date(date_str: str) -> str:
-    # Exemplo: "04/04/2025" -> "20250404"
     try:
         dt = datetime.strptime(date_str, "%m/%d/%Y")
         return dt.strftime("%Y%m%d")
@@ -144,7 +143,7 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     logging.debug(f"Customer acessível: {resource_name}")
     return resource_name.split("/")[-1]
 
-# Middleware otimizado: Se a requisição for OPTIONS, ela passa imediatamente
+# Middleware para logar o body da requisição
 @app.middleware("http")
 async def preprocess_request_body(request: Request, call_next):
     if request.method.upper() == "OPTIONS":
@@ -155,6 +154,8 @@ async def preprocess_request_body(request: Request, call_next):
         body_text = body_bytes.decode("utf-8")
     except Exception:
         body_text = str(body_bytes)
+    # Log do body raw recebido
+    logging.info(f"Request body raw: {body_text}")
     # Limpeza rápida do campo cover_photo
     body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
     modified_body_bytes = body_text.encode("utf-8")
@@ -212,7 +213,6 @@ class CampaignRequest(BaseModel):
 
 # Funções para criação de campanha
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_total: int, start_date: str, end_date: str) -> str:
-    # Calcula o budget diário e converte para micros
     days = days_between(start_date, end_date)
     if days <= 0:
         raise Exception("Intervalo de datas inválido.")
@@ -246,7 +246,6 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
         campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
     campaign.status = client.enums.CampaignStatusEnum.ENABLED
     campaign.campaign_budget = budget_resource_name
-    # Formata as datas para o formato YYYYMMDD exigido pelo Google Ads
     campaign.start_date = format_date(data.start_date)
     campaign.end_date = format_date(data.end_date)
     campaign.manual_cpc = client.get_type("ManualCpc")
@@ -386,7 +385,9 @@ def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest
     try:
         customer_id = get_customer_id(client)
         logging.info(f"Customer ID: {customer_id}")
-        budget_resource_name = create_campaign_budget(client, customer_id, request_data.budget, request_data.start_date, request_data.end_date)
+        budget_resource_name = create_campaign_budget(
+            client, customer_id, request_data.budget, request_data.start_date, request_data.end_date
+        )
         campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
         ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
         create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
@@ -412,13 +413,11 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     except Exception as e:
         logging.error("Erro ao inicializar o Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-    # Adiciona a tarefa de processamento em background
     background_tasks.add_task(process_campaign_task, client, request_data)
-    return {"status": "processing"}  # Resposta imediata
+    return {"status": "processing"}
 
 if __name__ == "__main__":
     import uvicorn
-    # Use a porta definida na variável de ambiente PORT; se não estiver definida, use 8000 (para testes locais)
     port = int(os.environ.get("PORT", 8000))
     logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}.")
     uvicorn.run(app, host="0.0.0.0", port=port)
