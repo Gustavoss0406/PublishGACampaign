@@ -29,12 +29,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Configuração de CORS para permitir todas as origens, métodos e cabeçalhos
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme necessário
+    allow_origins=["*"],  # Em produção, substitua "*" pelos domínios autorizados.
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Permite todos os métodos (incluindo OPTIONS)
+    allow_headers=["*"],  # Permite todos os cabeçalhos
 )
 
 def process_cover_photo(image_data: bytes) -> bytes:
@@ -276,8 +277,10 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad_group_ad.ad_group = ad_group_resource_name
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
     ad = ad_group_ad.ad
+    # Define a URL final a partir do campo 'final_url'
     ad.final_urls.append(data.final_url)
     
+    # Headlines
     headline1 = client.get_type("AdTextAsset")
     headline1.text = data.keyword1 if data.keyword1 else data.campaign_name.strip()
     ad.responsive_display_ad.headlines.append(headline1)
@@ -293,6 +296,7 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.headlines.append(headline3)
     logging.debug(f"Headline 3: {headline3.text}")
     
+    # Descrições
     desc1 = client.get_type("AdTextAsset")
     desc1.text = data.campaign_description
     ad.responsive_display_ad.descriptions.append(desc1)
