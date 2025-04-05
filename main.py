@@ -217,7 +217,9 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_tot
     if days <= 0:
         raise Exception("Intervalo de datas inválido.")
     daily_budget = budget_total / days
-    daily_budget_micros = int(daily_budget * 1_000_000)
+    # Ajusta para que o valor em micros seja um múltiplo do valor mínimo (10.000 micros = 0,01 da moeda)
+    minimum_unit = 10_000  
+    daily_budget_micros = round(daily_budget * 1_000_000 / minimum_unit) * minimum_unit
     logging.info(f"Budget diário: {daily_budget} reais, {daily_budget_micros} micros (para {days} dias)")
     
     campaign_budget_service = client.get_service("CampaignBudgetService")
