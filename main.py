@@ -1,22 +1,26 @@
 import logging
 import sys
-import uuid
 import os
+import uuid
 import re
+import time
+import json
+import requests
 import asyncio
+from io import BytesIO
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
-import requests
 from PIL import Image
-from io import BytesIO
 
-# Configuração de logs detalhados
+# ─── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -24,6 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── FastAPI lifecycle ─────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startup: Aplicação iniciada.")
@@ -32,7 +37,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# CORS
+# ─── CORS ────────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Data helpers
+# ─── Data helpers ────────────────────────────────────────────────────────────────
 def format_date(date_str: str) -> str:
     dt = datetime.strptime(date_str, "%m/%d/%Y")
     return dt.strftime("%Y%m%d")
@@ -51,7 +56,7 @@ def days_between(start_date: str, end_date: str) -> int:
     dt_end = datetime.strptime(end_date, "%m/%d/%Y")
     return (dt_end - dt_start).days + 1
 
-# Imagens
+# ─── Image processing ───────────────────────────────────────────────────────────
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
     w, h = img.size
@@ -81,6 +86,7 @@ def process_square_image(image_data: bytes) -> bytes:
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
+# ─── Google Ads asset uploads ───────────────────────────────────────────────────
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
     logger.info(f"Download da imagem: {image_url}")
     resp = requests.get(image_url)
@@ -113,6 +119,7 @@ def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_u
     res = svc.mutate_assets(customer_id=customer_id, operations=[op])
     return res.results[0].resource_name
 
+# ─── Google Ads helpers ──────────────────────────────────────────────────────────
 def get_customer_id(client: GoogleAdsClient) -> str:
     svc = client.get_service("CustomerService")
     res = svc.list_accessible_customers()
@@ -120,20 +127,20 @@ def get_customer_id(client: GoogleAdsClient) -> str:
         raise Exception("Nenhum customer acessível")
     return res.resource_names[0].split("/")[-1]
 
-# Log middleware
+# ─── Request logging middleware ─────────────────────────────────────────────────
 @app.middleware("http")
 async def preprocess_request(request: Request, call_next):
     logger.info(f"{request.method} {request.url}")
     body = await request.body()
     text = body.decode("utf-8", errors="ignore")
     logger.info(f"Request body raw: {text}")
-    # limpa cover_photo terminator
     cleaned = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', text, flags=re.DOTALL)
     async def receive():
         return {"type":"http.request","body": cleaned.encode("utf-8")}
     request._receive = receive
     return await call_next(request)
 
+# ─── Pydantic model ─────────────────────────────────────────────────────────────
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     refresh_token: str
@@ -173,7 +180,7 @@ class CampaignRequest(BaseModel):
             v = "http://" + v
         return v
 
-# Criação de budget
+# ─── Google Ads campaign creation helpers ───────────────────────────────────────
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, total: int, start: str, end: str) -> str:
     days = days_between(start, end)
     if days <= 0:
@@ -197,7 +204,7 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     camp.name = f"{data.campaign_name}_{uuid.uuid4().hex[:6]}"
     camp.advertising_channel_type = (
         client.enums.AdvertisingChannelTypeEnum.DISPLAY
-        if data.campaign_type.upper()=="DISPLAY"
+        if data.campaign_type.upper() == "DISPLAY"
         else client.enums.AdvertisingChannelTypeEnum.SEARCH
     )
     camp.status = client.enums.CampaignStatusEnum.ENABLED
@@ -236,11 +243,7 @@ def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, adg_res:
     if ops:
         svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
 
-# Corrigida: instanciação correta dos assets e text assets
-def create_responsive_display_ad(client: GoogleAdsClient,
-                                 customer_id: str,
-                                 ad_group_resource_name: str,
-                                 data: CampaignRequest) -> str:
+def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
     logger.info("Criando Responsive Display Ad.")
     svc = client.get_service("AdGroupAdService")
     op  = client.get_type("AdGroupAdOperation")
@@ -301,10 +304,12 @@ def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, camp_res
     if ops:
         svc.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
 
+# ─── Health check ──────────────────────────────────────────────────────────────
 @app.get("/")
 async def health_check():
     return {"status": "ok"}
 
+# ─── Background task ───────────────────────────────────────────────────────────
 def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
     try:
         cid       = get_customer_id(client)
@@ -318,23 +323,58 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
     except Exception:
         logger.exception("Erro no processamento da campanha.")
 
+# ─── Main endpoint ─────────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
+    # 1) Validate env vars
+    DEV_TOKEN = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN")
+    CID       = os.getenv("GOOGLE_ADS_CLIENT_ID")
+    CSECRET   = os.getenv("GOOGLE_ADS_CLIENT_SECRET")
+    missing = [n for n,v in [
+        ("GOOGLE_ADS_DEVELOPER_TOKEN", DEV_TOKEN),
+        ("GOOGLE_ADS_CLIENT_ID",       CID),
+        ("GOOGLE_ADS_CLIENT_SECRET",   CSECRET),
+    ] if not v]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Faltando env vars do Google Ads: {', '.join(missing)}"
+        )
+
+    # 2) Load client without login_customer_id
+    cfg = {
+        "developer_token": DEV_TOKEN,
+        "client_id":       CID,
+        "client_secret":   CSECRET,
+        "refresh_token":   request_data.refresh_token,
+        "use_proto_plus":  True,
+    }
     try:
-        cfg = {
-            "developer_token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
-            "client_id":       os.getenv("GOOGLE_ADS_CLIENT_ID"),
-            "client_secret":   os.getenv("GOOGLE_ADS_CLIENT_SECRET"),
-            "refresh_token":   request_data.refresh_token,
-            "use_proto_plus":  True
-        }
         client = GoogleAdsClient.load_from_dict(cfg)
-    except Exception as e:
-        logger.error("Erro ao inicializar Google Ads Client", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Erro ao inicializar GoogleAdsClient")
+        raise HTTPException(
+            status_code=400,
+            detail="Falha ao inicializar GoogleAdsClient: verifique client_id/secret e refresh_token"
+        )
+
+    # 3) Discover and set login_customer_id
+    try:
+        login_cid = get_customer_id(client)
+        client.login_customer_id = login_cid
+        logger.info(f"Usando login_customer_id = {login_cid}")
+    except Exception:
+        logger.exception("Não foi possível obter login_customer_id")
+        raise HTTPException(
+            status_code=400,
+            detail="Erro ao obter login_customer_id do Google Ads"
+        )
+
+    # 4) Schedule background processing
     background_tasks.add_task(process_campaign_task, client, request_data)
     return {"status": "processing"}
 
+# ─── Uvicorn ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
