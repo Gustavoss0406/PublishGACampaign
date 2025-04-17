@@ -1,17 +1,22 @@
 import logging
 import sys
+import uuid
 import os
-import time
-import requests
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Request, status
+import re
+import asyncio
+from contextlib import asynccontextmanager
+from urllib.parse import urlparse
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
-from typing import List
+from pydantic import BaseModel, field_validator, ConfigDict
+from google.ads.googleads.client import GoogleAdsClient
+from google.ads.googleads.errors import GoogleAdsException
+import requests
+from PIL import Image
+from io import BytesIO
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
+# Configuração de logs detalhados
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -19,8 +24,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── FastAPI setup ─────────────────────────────────────────────────────────────
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Startup: Aplicação iniciada.")
+    yield
+    logger.info("Shutdown: Aplicação encerrada.")
+
+app = FastAPI(lifespan=lifespan)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,277 +41,300 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Constantes ─────────────────────────────────────────────────────────────────
-FB_API_VERSION      = "v16.0"
-GLOBAL_COUNTRIES    = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
-PUBLISHER_PLATFORMS = ["facebook","instagram","audience_network","messenger"]
+# Data helpers
+def format_date(date_str: str) -> str:
+    dt = datetime.strptime(date_str, "%m/%d/%Y")
+    return dt.strftime("%Y%m%d")
 
-# ─── Helpers ────────────────────────────────────────────────────────────────────
-def extract_fb_error(resp: requests.Response) -> str:
-    try:
-        err = resp.json().get("error", {})
-        return err.get("error_user_msg") or err.get("message") or resp.text
-    except:
-        return resp.text or "Erro desconhecido"
+def days_between(start_date: str, end_date: str) -> int:
+    dt_start = datetime.strptime(start_date, "%m/%d/%Y")
+    dt_end = datetime.strptime(end_date, "%m/%d/%Y")
+    return (dt_end - dt_start).days + 1
 
-def rollback_campaign(campaign_id: str, token: str):
-    url = f"https://graph.facebook.com/{FB_API_VERSION}/{campaign_id}"
-    try:
-        requests.delete(url, params={"access_token": token})
-        logger.info(f"Rollback: campanha {campaign_id} deletada")
-    except:
-        logger.exception("Falha no rollback")
+# Imagens
+def process_cover_photo(image_data: bytes) -> bytes:
+    img = Image.open(BytesIO(image_data))
+    w, h = img.size
+    target_ratio = 1.91
+    ratio = w / h
+    if ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        img = img.crop((0, top, w, top + new_h))
+    img = img.resize((1200, 628))
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
-def upload_video_to_fb(account_id: str, token: str, video_url: str) -> str:
-    url = f"https://graph.facebook.com/{FB_API_VERSION}/act_{account_id}/advideos"
-    resp = requests.post(url, data={"file_url": video_url, "access_token": token})
-    logger.debug(f"Upload vídeo status {resp.status_code}: {resp.text}")
+def process_square_image(image_data: bytes) -> bytes:
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    w, h = img.size
+    m = min(w, h)
+    left = (w - m) // 2
+    top  = (h - m) // 2
+    img = img.crop((left, top, left + m, top + m)).resize((1200, 1200))
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
+    logger.info(f"Download da imagem: {image_url}")
+    resp = requests.get(image_url)
     if resp.status_code != 200:
-        raise Exception(f"Erro ao enviar vídeo: {extract_fb_error(resp)}")
-    vid = resp.json().get("id")
-    if not vid:
-        raise Exception("Facebook não retornou video_id")
-    return vid
+        raise Exception(f"Falha no download da imagem: {resp.status_code}")
+    data = resp.content
+    if process:
+        data = process_cover_photo(data)
+    svc = client.get_service("AssetService")
+    op  = client.get_type("AssetOperation")
+    asset = op.create
+    asset.name = f"Image_asset_{uuid.uuid4()}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = data
+    res = svc.mutate_assets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
-def fetch_video_thumbnail(video_id: str, token: str) -> str:
-    url = f"https://graph.facebook.com/{FB_API_VERSION}/{video_id}/thumbnails"
-    for _ in range(5):
-        resp = requests.get(url, params={"access_token": token})
-        if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            if data:
-                return data[0]["uri"]
-        logger.debug("Thumbnail não disponível ainda, aguardando...")
-        time.sleep(2)
-    raise Exception("Não foi possível obter thumbnail do vídeo")
-
-def get_page_id(token: str) -> str:
-    resp = requests.get(f"https://graph.facebook.com/{FB_API_VERSION}/me/accounts",
-                        params={"access_token": token})
+def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
+    logger.info(f"Download imagem quadrada: {image_url}")
+    resp = requests.get(image_url)
     if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail="Erro ao buscar páginas")
-    data = resp.json().get("data", [])
-    if not data:
-        raise HTTPException(status_code=533, detail="Nenhuma página disponível")
-    return data[0]["id"]
+        raise Exception(f"Falha no download da imagem: {resp.status_code}")
+    data = process_square_image(resp.content)
+    svc = client.get_service("AssetService")
+    op  = client.get_type("AssetOperation")
+    asset = op.create
+    asset.name = f"Square_Image_asset_{uuid.uuid4()}"
+    asset.type_ = client.enums.AssetTypeEnum.IMAGE
+    asset.image_asset.data = data
+    res = svc.mutate_assets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
-def check_account_balance(account_id: str, token: str, required_cents: int):
-    resp = requests.get(f"https://graph.facebook.com/{FB_API_VERSION}/act_{account_id}",
-                        params={"fields": "spend_cap,amount_spent", "access_token": token})
-    if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail="Erro ao verificar saldo")
-    js = resp.json()
-    cap = int(js.get("spend_cap", 0))
-    spent = int(js.get("amount_spent", 0))
-    if cap - spent < required_cents:
-        raise HTTPException(status_code=402, detail="Fundos insuficientes")
+def get_customer_id(client: GoogleAdsClient) -> str:
+    svc = client.get_service("CustomerService")
+    res = svc.list_accessible_customers()
+    if not res.resource_names:
+        raise Exception("Nenhum customer acessível")
+    return res.resource_names[0].split("/")[-1]
 
-# ─── Modelos Pydantic ───────────────────────────────────────────────────────────
+# Log middleware
+@app.middleware("http")
+async def preprocess_request(request: Request, call_next):
+    logger.info(f"{request.method} {request.url}")
+    body = await request.body()
+    text = body.decode("utf-8", errors="ignore")
+    logger.info(f"Request body raw: {text}")
+    # limpa cover_photo terminator
+    cleaned = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', text, flags=re.DOTALL)
+    async def receive():
+        return {"type":"http.request","body": cleaned.encode("utf-8")}
+    request._receive = receive
+    return await call_next(request)
+
 class CampaignRequest(BaseModel):
-    account_id:   str
-    token:        str
-    campaign_name: str = ""
-    objective:     str = "OUTCOME_TRAFFIC"
-    content:       str = ""
-    description:   str = ""
-    keywords:      str = ""
-    budget:        float = 0.0
-    initial_date:  str = ""
-    final_date:    str = ""
-    target_sex:    str = ""
-    target_age:    int = 0
-    image:         str = ""
-    carrossel:     List[str] = []
-    video:         str = Field(default="", alias="video")
-
-    @field_validator("objective", mode="before")
-    def map_objective(cls, v):
-        m = {
-            "Vendas": "OUTCOME_SALES",
-            "Promover site/app": "OUTCOME_TRAFFIC",
-            "Leads": "OUTCOME_LEADS",
-            "Alcance de marca": "OUTCOME_AWARENESS"
-        }
-        return m.get(v, v)
+    model_config = ConfigDict(extra="allow")
+    refresh_token: str
+    campaign_name: str
+    campaign_description: str
+    objective: str
+    cover_photo: str
+    final_url: str
+    keyword1: str
+    keyword2: str
+    keyword3: str
+    budget: int
+    start_date: str
+    end_date: str
+    price_model: str
+    campaign_type: str
+    audience_gender: str
+    audience_min_age: int
+    audience_max_age: int
+    devices: list[str]
 
     @field_validator("budget", mode="before")
-    def parse_budget(cls, v):
+    def convert_budget(cls, v):
         if isinstance(v, str):
-            return float(v.replace("$", "").replace(",", "."))
+            v = v.replace("$","").strip()
+            return int(float(v))
         return v
 
-@app.exception_handler(RequestValidationError)
-async def validation_error(request: Request, exc: RequestValidationError):
-    msg = exc.errors()[0].get("msg", "Erro de validação")
-    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": msg})
+    @field_validator("audience_min_age","audience_max_age", mode="before")
+    def convert_age(cls, v):
+        return int(v)
 
-# ─── Endpoint principal ───────────────────────────────────────────────────────
+    @field_validator("cover_photo", mode="before")
+    def clean_cover(cls, v):
+        v = v.strip().rstrip(" ;")
+        if v and not urlparse(v).scheme:
+            v = "http://" + v
+        return v
+
+# Criação de budget
+def create_campaign_budget(client: GoogleAdsClient, customer_id: str, total: int, start: str, end: str) -> str:
+    days = days_between(start, end)
+    if days <= 0:
+        raise Exception("Datas inválidas")
+    daily = total / days
+    unit = 10_000
+    micros = round(daily * 1_000_000 / unit) * unit
+    svc = client.get_service("CampaignBudgetService")
+    op  = client.get_type("CampaignBudgetOperation")
+    budget = op.create
+    budget.name = f"Budget_{uuid.uuid4()}"
+    budget.amount_micros = int(micros)
+    budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+    res = svc.mutate_campaign_budgets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
+
+def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_res: str, data: CampaignRequest) -> str:
+    svc = client.get_service("CampaignService")
+    op  = client.get_type("CampaignOperation")
+    camp = op.create
+    camp.name = f"{data.campaign_name}_{uuid.uuid4().hex[:6]}"
+    camp.advertising_channel_type = (
+        client.enums.AdvertisingChannelTypeEnum.DISPLAY
+        if data.campaign_type.upper()=="DISPLAY"
+        else client.enums.AdvertisingChannelTypeEnum.SEARCH
+    )
+    camp.status = client.enums.CampaignStatusEnum.ENABLED
+    camp.campaign_budget = budget_res
+    camp.start_date = format_date(data.start_date)
+    camp.end_date   = format_date(data.end_date)
+    res = svc.mutate_campaigns(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
+
+def create_ad_group(client: GoogleAdsClient, customer_id: str, camp_res: str, data: CampaignRequest) -> str:
+    svc = client.get_service("AdGroupService")
+    op  = client.get_type("AdGroupOperation")
+    ag  = op.create
+    ag.name = f"{data.campaign_name}_AdGroup_{uuid.uuid4().hex[:6]}"
+    ag.campaign = camp_res
+    ag.status   = client.enums.AdGroupStatusEnum.ENABLED
+    ag.type_    = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
+    ag.cpc_bid_micros = 1_000_000
+    res = svc.mutate_ad_groups(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
+
+def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, adg_res: str, data: CampaignRequest):
+    svc = client.get_service("AdGroupCriterionService")
+    ops = []
+    def mk_kw(kw):
+        op = client.get_type("AdGroupCriterionOperation")
+        c = op.create
+        c.ad_group = adg_res
+        c.status   = client.enums.AdGroupCriterionStatusEnum.ENABLED
+        c.keyword.text = kw
+        c.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
+        return op
+    for kw in [data.keyword1, data.keyword2, data.keyword3]:
+        if kw:
+            ops.append(mk_kw(kw))
+    if ops:
+        svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
+
+# Corrigida: instanciação correta dos assets e text assets
+def create_responsive_display_ad(client: GoogleAdsClient,
+                                 customer_id: str,
+                                 ad_group_resource_name: str,
+                                 data: CampaignRequest) -> str:
+    logger.info("Criando Responsive Display Ad.")
+    svc = client.get_service("AdGroupAdService")
+    op  = client.get_type("AdGroupAdOperation")
+    aga = op.create
+    aga.ad_group = ad_group_resource_name
+    aga.status   = client.enums.AdGroupAdStatusEnum.ENABLED
+
+    ad = aga.ad
+    ad.final_urls.append(data.final_url)
+
+    # Headlines
+    for txt in [data.keyword1 or data.campaign_name, data.keyword2, data.keyword3]:
+        asset = client.get_type("AdTextAsset")()
+        asset.text = txt
+        ad.responsive_display_ad.headlines.append(asset)
+
+    # Descriptions
+    for desc in [data.campaign_description, data.objective]:
+        asset = client.get_type("AdTextAsset")()
+        asset.text = desc
+        ad.responsive_display_ad.descriptions.append(asset)
+
+    ad.responsive_display_ad.business_name = data.campaign_name
+    long_hl = client.get_type("AdTextAsset")()
+    long_hl.text = f"{data.campaign_name} – {data.objective}"
+    ad.responsive_display_ad.long_headline.CopyFrom(long_hl)
+
+    # Images
+    if not data.cover_photo:
+        raise Exception("cover_photo vazio")
+
+    mkt_res  = upload_image_asset(client, customer_id, data.cover_photo, process=True)
+    sqr_res  = upload_square_image_asset(client, customer_id, data.cover_photo)
+
+    img1 = client.get_type("AdImageAsset")()
+    img1.asset = mkt_res
+    ad.responsive_display_ad.marketing_images.append(img1)
+
+    img2 = client.get_type("AdImageAsset")()
+    img2.asset = sqr_res
+    ad.responsive_display_ad.square_marketing_images.append(img2)
+
+    res = svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
+
+def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, camp_res: str, data: CampaignRequest):
+    svc = client.get_service("CampaignCriterionService")
+    ops = []
+    if data.audience_gender.upper() in ["MALE","FEMALE"]:
+        exclude = ["FEMALE","UNDETERMINED"] if data.audience_gender.upper()=="MALE" else ["MALE","UNDETERMINED"]
+        for g in exclude:
+            op = client.get_type("CampaignCriterionOperation")
+            c = op.create
+            c.campaign = camp_res
+            c.gender.type_ = client.enums.GenderTypeEnum[g]
+            c.negative = True
+            ops.append(op)
+    if ops:
+        svc.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
+
+@app.get("/")
+async def health_check():
+    return {"status": "ok"}
+
+def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
+    try:
+        cid       = get_customer_id(client)
+        budget    = create_campaign_budget(client, cid, data.budget, data.start_date, data.end_date)
+        camp_res  = create_campaign_resource(client, cid, budget, data)
+        adg_res   = create_ad_group(client, cid, camp_res, data)
+        create_ad_group_keywords(client, cid, adg_res, data)
+        create_responsive_display_ad(client, cid, adg_res, data)
+        apply_targeting_criteria(client, cid, camp_res, data)
+        logger.info("Campanha Google Ads criada com sucesso.")
+    except Exception:
+        logger.exception("Erro no processamento da campanha.")
+
 @app.post("/create_campaign")
-async def create_campaign(req: Request):
-    data = CampaignRequest(**await req.json())
-    logger.info(f"Iniciando campanha: {data.campaign_name}")
-
-    # 1) Verifica saldo
-    total_cents = int(data.budget * 100)
-    check_account_balance(data.account_id, data.token, total_cents)
-
-    # 2) Cria campanha
-    camp_resp = requests.post(
-        f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/campaigns",
-        json={
-            "name": data.campaign_name,
-            "objective": data.objective,
-            "status": "ACTIVE",
-            "access_token": data.token,
-            "special_ad_categories": []
+async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
+    try:
+        cfg = {
+            "developer_token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
+            "client_id":       os.getenv("GOOGLE_ADS_CLIENT_ID"),
+            "client_secret":   os.getenv("GOOGLE_ADS_CLIENT_SECRET"),
+            "refresh_token":   request_data.refresh_token,
+            "use_proto_plus":  True
         }
-    )
-    if camp_resp.status_code != 200:
-        raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
-    camp_id = camp_resp.json()["id"]
-
-    # 3) Criação do Ad Set (corrigido para todos os objetivos)
-    start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
-    end_dt   = datetime.strptime(data.final_date,   "%m/%d/%Y")
-    days     = max((end_dt - start_dt).days, 1)
-    daily    = total_cents // days
-
-    if daily < 576:
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
-    if (end_dt - start_dt) < timedelta(hours=24):
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail="Duração mínima 24h")
-
-    # otimização e cobrança por objetivo
-    if data.objective == "OUTCOME_AWARENESS":
-        optimization_goal = "REACH"
-        billing_event    = "IMPRESSIONS"
-    else:
-        optimization_goal = "LINK_CLICKS"
-        billing_event    = "LINK_CLICKS"
-
-    page_id = get_page_id(data.token)
-    promoted_object = {"page_id": page_id}
-
-    adset_payload = {
-        "name":              f"AdSet {data.campaign_name}",
-        "campaign_id":       camp_id,
-        "daily_budget":      daily,
-        "billing_event":     billing_event,
-        "optimization_goal": optimization_goal,
-        "bid_amount":        100,
-        "targeting": {
-            "geo_locations":      {"countries": GLOBAL_COUNTRIES},
-            "genders":            {"male":[1], "female":[2]}.get(data.target_sex.lower(), []),
-            "age_min":            data.target_age,
-            "age_max":            data.target_age,
-            "publisher_platforms": PUBLISHER_PLATFORMS
-        },
-        "start_time":       int(start_dt.timestamp()),
-        "end_time":         int(end_dt.timestamp()),
-        "promoted_object":  promoted_object,
-        "access_token":     data.token
-    }
-    adset_resp = requests.post(
-        f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
-        json=adset_payload
-    )
-    if adset_resp.status_code != 200:
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=extract_fb_error(adset_resp))
-    adset_id = adset_resp.json()["id"]
-
-    # 4) Upload do vídeo (se houver) + thumbnail
-    video_id = None
-    thumbnail = None
-    if data.video.strip():
-        url = data.video.strip().rstrip(";,")
-        try:
-            video_id = upload_video_to_fb(data.account_id, data.token, url)
-            thumbnail = fetch_video_thumbnail(video_id, data.token)
-        except Exception as e:
-            rollback_campaign(camp_id, data.token)
-            raise HTTPException(status_code=400, detail=str(e))
-
-    # 5) Monta spec do Creative
-    default_link    = data.content or "https://www.adstock.ai"
-    default_message = data.description
-
-    if video_id:
-        creative_spec = {
-            "video_data": {
-                "video_id":       video_id,
-                "message":        default_message,
-                "image_url":      thumbnail,
-                "call_to_action": {"type":"LEARN_MORE","value":{"link":default_link}}
-            }
-        }
-    elif data.image.strip():
-        creative_spec = {
-            "link_data": {
-                "message": default_message,
-                "link":    default_link,
-                "picture": data.image.strip()
-            }
-        }
-    elif any(u.strip() for u in data.carrossel):
-        child = [
-            {"link": default_link, "picture": u, "message": default_message}
-            for u in data.carrossel if u.strip()
-        ]
-        creative_spec = {"link_data": {"child_attachments": child,
-                                       "message": default_message,
-                                       "link": default_link}}
-    else:
-        creative_spec = {
-            "link_data": {
-                "message": default_message,
-                "link":    default_link,
-                "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
-            }
-        }
-
-    # 6) Cria Ad Creative
-    creative_resp = requests.post(
-        f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
-        json={
-            "name": f"Creative {data.campaign_name}",
-            "object_story_spec": {"page_id": page_id, **creative_spec},
-            "access_token": data.token
-        }
-    )
-    if creative_resp.status_code != 200:
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
-    creative_id = creative_resp.json()["id"]
-
-    # 7) Cria o Ad
-    ad_resp = requests.post(
-        f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/ads",
-        json={
-            "name":         f"Ad {data.campaign_name}",
-            "adset_id":     adset_id,
-            "creative":     {"creative_id": creative_id},
-            "status":       "ACTIVE",
-            "access_token": data.token
-        }
-    )
-    if ad_resp.status_code != 200:
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=extract_fb_error(ad_resp))
-    ad_id = ad_resp.json()["id"]
-
-    # 8) Retorno final
-    return {
-        "status":        "success",
-        "campaign_id":   camp_id,
-        "ad_set_id":     adset_id,
-        "creative_id":   creative_id,
-        "ad_id":         ad_id,
-        "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns?act={data.account_id}&campaign_ids={camp_id}"
-    }
+        client = GoogleAdsClient.load_from_dict(cfg)
+    except Exception as e:
+        logger.error("Erro ao inicializar Google Ads Client", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    background_tasks.add_task(process_campaign_task, client, request_data)
+    return {"status": "processing"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
