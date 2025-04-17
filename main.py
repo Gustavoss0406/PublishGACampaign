@@ -6,7 +6,6 @@ import re
 import time
 import json
 import requests
-import asyncio
 from io import BytesIO
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -46,15 +45,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Data helpers ────────────────────────────────────────────────────────────────
+# ─── Helpers ────────────────────────────────────────────────────────────────────
 def format_date(date_str: str) -> str:
     dt = datetime.strptime(date_str, "%m/%d/%Y")
     return dt.strftime("%Y%m%d")
 
 def days_between(start_date: str, end_date: str) -> int:
     dt_start = datetime.strptime(start_date, "%m/%d/%Y")
-    dt_end = datetime.strptime(end_date, "%m/%d/%Y")
+    dt_end   = datetime.strptime(end_date,   "%m/%d/%Y")
     return (dt_end - dt_start).days + 1
+
+def extract_fb_error(resp: requests.Response) -> str:
+    try:
+        err = resp.json().get("error", {})
+        return err.get("error_user_msg") or err.get("message") or resp.text
+    except:
+        return resp.text or "Erro desconhecido"
 
 # ─── Image processing ───────────────────────────────────────────────────────────
 def process_cover_photo(image_data: bytes) -> bytes:
@@ -88,7 +94,6 @@ def process_square_image(image_data: bytes) -> bytes:
 
 # ─── Google Ads asset uploads ───────────────────────────────────────────────────
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
-    logger.info(f"Download da imagem: {image_url}")
     resp = requests.get(image_url)
     if resp.status_code != 200:
         raise Exception(f"Falha no download da imagem: {resp.status_code}")
@@ -105,7 +110,6 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
     return res.results[0].resource_name
 
 def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
-    logger.info(f"Download imagem quadrada: {image_url}")
     resp = requests.get(image_url)
     if resp.status_code != 200:
         raise Exception(f"Falha no download da imagem: {resp.status_code}")
@@ -130,10 +134,8 @@ def get_customer_id(client: GoogleAdsClient) -> str:
 # ─── Request logging middleware ─────────────────────────────────────────────────
 @app.middleware("http")
 async def preprocess_request(request: Request, call_next):
-    logger.info(f"{request.method} {request.url}")
     body = await request.body()
     text = body.decode("utf-8", errors="ignore")
-    logger.info(f"Request body raw: {text}")
     cleaned = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', text, flags=re.DOTALL)
     async def receive():
         return {"type":"http.request","body": cleaned.encode("utf-8")}
@@ -173,14 +175,16 @@ class CampaignRequest(BaseModel):
     def convert_age(cls, v):
         return int(v)
 
-    @field_validator("cover_photo", mode="before")
-    def clean_cover(cls, v):
+    @field_validator("cover_photo","final_url", mode="before")
+    def clean_urls(cls, v):
         v = v.strip().rstrip(" ;")
-        if v and not urlparse(v).scheme:
+        if v.lower() == "null" or not v:
+            return ""
+        if not urlparse(v).scheme:
             v = "http://" + v
         return v
 
-# ─── Google Ads campaign creation helpers ───────────────────────────────────────
+# ─── Google Ads campaign logic ──────────────────────────────────────────────────
 def create_campaign_budget(client: GoogleAdsClient, customer_id: str, total: int, start: str, end: str) -> str:
     days = days_between(start, end)
     if days <= 0:
@@ -229,22 +233,19 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, camp_res: str, da
 def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, adg_res: str, data: CampaignRequest):
     svc = client.get_service("AdGroupCriterionService")
     ops = []
-    def mk_kw(kw):
-        op = client.get_type("AdGroupCriterionOperation")
-        c = op.create
-        c.ad_group = adg_res
-        c.status   = client.enums.AdGroupCriterionStatusEnum.ENABLED
-        c.keyword.text = kw
-        c.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
-        return op
     for kw in [data.keyword1, data.keyword2, data.keyword3]:
         if kw:
-            ops.append(mk_kw(kw))
+            op = client.get_type("AdGroupCriterionOperation")
+            c = op.create
+            c.ad_group = adg_res
+            c.status   = client.enums.AdGroupCriterionStatusEnum.ENABLED
+            c.keyword.text = kw
+            c.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
+            ops.append(op)
     if ops:
         svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
 
 def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
-    logger.info("Criando Responsive Display Ad.")
     svc = client.get_service("AdGroupAdService")
     op  = client.get_type("AdGroupAdOperation")
     aga = op.create
@@ -252,15 +253,15 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     aga.status   = client.enums.AdGroupAdStatusEnum.ENABLED
 
     ad = aga.ad
+    if not data.final_url:
+        raise Exception("final_url vazio")
     ad.final_urls.append(data.final_url)
 
-    # Headlines
+    # Headlines & descriptions
     for txt in [data.keyword1 or data.campaign_name, data.keyword2, data.keyword3]:
         asset = client.get_type("AdTextAsset")()
         asset.text = txt
         ad.responsive_display_ad.headlines.append(asset)
-
-    # Descriptions
     for desc in [data.campaign_description, data.objective]:
         asset = client.get_type("AdTextAsset")()
         asset.text = desc
@@ -272,19 +273,13 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.long_headline.CopyFrom(long_hl)
 
     # Images
-    if not data.cover_photo:
-        raise Exception("cover_photo vazio")
-
-    mkt_res  = upload_image_asset(client, customer_id, data.cover_photo, process=True)
-    sqr_res  = upload_square_image_asset(client, customer_id, data.cover_photo)
-
-    img1 = client.get_type("AdImageAsset")()
-    img1.asset = mkt_res
-    ad.responsive_display_ad.marketing_images.append(img1)
-
-    img2 = client.get_type("AdImageAsset")()
-    img2.asset = sqr_res
-    ad.responsive_display_ad.square_marketing_images.append(img2)
+    if data.cover_photo:
+        mkt_res = upload_image_asset(client, customer_id, data.cover_photo, process=True)
+        sqr_res = upload_square_image_asset(client, customer_id, data.cover_photo)
+        img1 = client.get_type("AdImageAsset")(); img1.asset = mkt_res
+        img2 = client.get_type("AdImageAsset")(); img2.asset = sqr_res
+        ad.responsive_display_ad.marketing_images.append(img1)
+        ad.responsive_display_ad.square_marketing_images.append(img2)
 
     res = svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
     return res.results[0].resource_name
@@ -312,10 +307,10 @@ async def health_check():
 # ─── Background task ───────────────────────────────────────────────────────────
 def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
     try:
-        cid       = get_customer_id(client)
-        budget    = create_campaign_budget(client, cid, data.budget, data.start_date, data.end_date)
-        camp_res  = create_campaign_resource(client, cid, budget, data)
-        adg_res   = create_ad_group(client, cid, camp_res, data)
+        cid      = get_customer_id(client)
+        budget   = create_campaign_budget(client, cid, data.budget, data.start_date, data.end_date)
+        camp_res = create_campaign_resource(client, cid, budget, data)
+        adg_res  = create_ad_group(client, cid, camp_res, data)
         create_ad_group_keywords(client, cid, adg_res, data)
         create_responsive_display_ad(client, cid, adg_res, data)
         apply_targeting_criteria(client, cid, camp_res, data)
@@ -326,7 +321,12 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
 # ─── Main endpoint ─────────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
-    # 1) Validate env vars
+    # 1) Valida final_url
+    if not request_data.final_url:
+        raise HTTPException(status_code=400, detail="Campo final_url é obrigatório")
+    # cover_photo é opcional agora
+
+    # 2) Valida env vars Google Ads
     DEV_TOKEN = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN")
     CID       = os.getenv("GOOGLE_ADS_CLIENT_ID")
     CSECRET   = os.getenv("GOOGLE_ADS_CLIENT_SECRET")
@@ -336,12 +336,9 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         ("GOOGLE_ADS_CLIENT_SECRET",   CSECRET),
     ] if not v]
     if missing:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Faltando env vars do Google Ads: {', '.join(missing)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Faltando env vars: {', '.join(missing)}")
 
-    # 2) Load client without login_customer_id
+    # 3) Carrega GoogleAdsClient sem login_customer_id
     cfg = {
         "developer_token": DEV_TOKEN,
         "client_id":       CID,
@@ -358,19 +355,16 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
             detail="Falha ao inicializar GoogleAdsClient: verifique client_id/secret e refresh_token"
         )
 
-    # 3) Discover and set login_customer_id
+    # 4) Descobre e configura login_customer_id
     try:
         login_cid = get_customer_id(client)
         client.login_customer_id = login_cid
         logger.info(f"Usando login_customer_id = {login_cid}")
     except Exception:
         logger.exception("Não foi possível obter login_customer_id")
-        raise HTTPException(
-            status_code=400,
-            detail="Erro ao obter login_customer_id do Google Ads"
-        )
+        raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id")
 
-    # 4) Schedule background processing
+    # 5) Agenda criação em background
     background_tasks.add_task(process_campaign_task, client, request_data)
     return {"status": "processing"}
 
