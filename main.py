@@ -13,7 +13,7 @@ from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 import requests
-from PIL import Image, ImageOps
+from PIL import Image
 from io import BytesIO
 
 # Configuração de logs detalhados
@@ -22,153 +22,120 @@ logging.basicConfig(
     stream=sys.stdout,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.info("Startup: Aplicação iniciada.")
+    logger.info("Startup: Aplicação iniciada.")
     yield
-    logging.info("Shutdown: Aplicação encerrada.")
+    logger.info("Shutdown: Aplicação encerrada.")
 
 app = FastAPI(lifespan=lifespan)
 
-# Configuração de CORS para permitir todas as origens, métodos e cabeçalhos (para teste)
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, defina as origens permitidas.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Função para converter data do formato MM/DD/YYYY para YYYYMMDD
+# Data helpers
 def format_date(date_str: str) -> str:
-    try:
-        dt = datetime.strptime(date_str, "%m/%d/%Y")
-        return dt.strftime("%Y%m%d")
-    except Exception as e:
-        logging.error(f"Erro ao formatar data '{date_str}': {e}")
-        raise
+    dt = datetime.strptime(date_str, "%m/%d/%Y")
+    return dt.strftime("%Y%m%d")
 
-# Função para calcular a quantidade de dias entre duas datas (formato MM/DD/YYYY)
 def days_between(start_date: str, end_date: str) -> int:
-    try:
-        dt_start = datetime.strptime(start_date, "%m/%d/%Y")
-        dt_end = datetime.strptime(end_date, "%m/%d/%Y")
-        delta = dt_end - dt_start
-        return delta.days + 1  # +1 para incluir o dia final
-    except Exception as e:
-        logging.error(f"Erro ao calcular intervalo entre '{start_date}' e '{end_date}': {e}")
-        raise
+    dt_start = datetime.strptime(start_date, "%m/%d/%Y")
+    dt_end = datetime.strptime(end_date, "%m/%d/%Y")
+    return (dt_end - dt_start).days + 1
 
-# Funções de processamento de imagem
+# Imagens
 def process_cover_photo(image_data: bytes) -> bytes:
     img = Image.open(BytesIO(image_data))
-    width, height = img.size
+    w, h = img.size
     target_ratio = 1.91
-    current_ratio = width / height
-    logging.debug(f"Cover original: {width}x{height}, razão: {current_ratio:.2f}")
-    if current_ratio > target_ratio:
-        new_width = int(height * target_ratio)
-        left = (width - new_width) // 2
-        img = img.crop((left, 0, left + new_width, height))
-    elif current_ratio < target_ratio:
-        new_height = int(width / target_ratio)
-        top = (height - new_height) // 2
-        img = img.crop((0, top, width, top + new_height))
+    ratio = w / h
+    if ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        img = img.crop((0, top, w, top + new_h))
     img = img.resize((1200, 628))
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
-    processed_data = buf.getvalue()
-    logging.debug(f"Cover processada: 1200x628, {len(processed_data)} bytes")
-    return processed_data
+    return buf.getvalue()
 
 def process_square_image(image_data: bytes) -> bytes:
-    img = Image.open(BytesIO(image_data))
-    img = img.convert("RGB")
-    width, height = img.size
-    min_dim = min(width, height)
-    left = (width - min_dim) // 2
-    top = (height - min_dim) // 2
-    img_cropped = img.crop((left, top, left + min_dim, top + min_dim))
-    img_resized = img_cropped.resize((1200, 1200))
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    w, h = img.size
+    m = min(w, h)
+    left = (w - m) // 2
+    top  = (h - m) // 2
+    img = img.crop((left, top, left + m, top + m)).resize((1200, 1200))
     buf = BytesIO()
-    img_resized.save(buf, format="PNG", optimize=True)
-    processed_data = buf.getvalue()
-    logging.debug(f"Imagem quadrada processada: {img_resized.size}, {len(processed_data)} bytes")
-    return processed_data
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
-    logging.info(f"Download da imagem: {image_url}")
-    response = requests.get(image_url)
-    if response.status_code != 200:
-        raise Exception(f"Falha no download da imagem. Status: {response.status_code}")
-    image_data = response.content
+    logger.info(f"Download da imagem: {image_url}")
+    resp = requests.get(image_url)
+    if resp.status_code != 200:
+        raise Exception(f"Falha no download da imagem: {resp.status_code}")
+    data = resp.content
     if process:
-        image_data = process_cover_photo(image_data)
-    asset_service = client.get_service("AssetService")
-    asset_operation = client.get_type("AssetOperation")
-    asset = asset_operation.create
+        data = process_cover_photo(data)
+    svc = client.get_service("AssetService")
+    op  = client.get_type("AssetOperation")
+    asset = op.create
     asset.name = f"Image_asset_{uuid.uuid4()}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
-    asset.image_asset.data = image_data
-    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-    resource_name = mutate_response.results[0].resource_name
-    logging.info(f"Imagem enviada: {resource_name}")
-    return resource_name
+    asset.image_asset.data = data
+    res = svc.mutate_assets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
 def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str) -> str:
-    logging.info(f"Download da imagem quadrada: {image_url}")
-    response = requests.get(image_url)
-    if response.status_code != 200:
-        raise Exception(f"Falha no download da imagem. Status: {response.status_code}")
-    image_data = response.content
-    processed_data = process_square_image(image_data)
-    asset_service = client.get_service("AssetService")
-    asset_operation = client.get_type("AssetOperation")
-    asset = asset_operation.create
+    logger.info(f"Download imagem quadrada: {image_url}")
+    resp = requests.get(image_url)
+    if resp.status_code != 200:
+        raise Exception(f"Falha no download da imagem: {resp.status_code}")
+    data = process_square_image(resp.content)
+    svc = client.get_service("AssetService")
+    op  = client.get_type("AssetOperation")
+    asset = op.create
     asset.name = f"Square_Image_asset_{uuid.uuid4()}"
     asset.type_ = client.enums.AssetTypeEnum.IMAGE
-    asset.image_asset.data = processed_data
-    mutate_response = asset_service.mutate_assets(customer_id=customer_id, operations=[asset_operation])
-    resource_name = mutate_response.results[0].resource_name
-    logging.info(f"Imagem quadrada enviada: {resource_name}")
-    return resource_name
+    asset.image_asset.data = data
+    res = svc.mutate_assets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
 def get_customer_id(client: GoogleAdsClient) -> str:
-    customer_service = client.get_service("CustomerService")
-    accessible_customers = customer_service.list_accessible_customers()
-    if not accessible_customers.resource_names:
-        raise Exception("Nenhum customer acessível encontrado.")
-    resource_name = accessible_customers.resource_names[0]
-    logging.debug(f"Customer acessível: {resource_name}")
-    return resource_name.split("/")[-1]
+    svc = client.get_service("CustomerService")
+    res = svc.list_accessible_customers()
+    if not res.resource_names:
+        raise Exception("Nenhum customer acessível")
+    return res.resource_names[0].split("/")[-1]
 
-# Middleware para logar o body da requisição
+# Log middleware
 @app.middleware("http")
-async def preprocess_request_body(request: Request, call_next):
-    if request.method.upper() == "OPTIONS":
-        return await call_next(request)
-    logging.info(f"Recebendo {request.method} {request.url}")
-    body_bytes = await request.body()
-    try:
-        body_text = body_bytes.decode("utf-8")
-    except Exception:
-        body_text = str(body_bytes)
-    # Log do body raw recebido
-    logging.info(f"Request body raw: {body_text}")
-    # Limpeza rápida do campo cover_photo
-    body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
-    modified_body_bytes = body_text.encode("utf-8")
-    
+async def preprocess_request(request: Request, call_next):
+    logger.info(f"{request.method} {request.url}")
+    body = await request.body()
+    text = body.decode("utf-8", errors="ignore")
+    logger.info(f"Request body raw: {text}")
+    # limpa cover_photo terminator
+    cleaned = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', text, flags=re.DOTALL)
     async def receive():
-        return {"type": "http.request", "body": modified_body_bytes}
+        return {"type":"http.request","body": cleaned.encode("utf-8")}
     request._receive = receive
-    response = await call_next(request)
-    return response
+    return await call_next(request)
 
 class CampaignRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
-    
     refresh_token: str
     campaign_name: str
     campaign_description: str
@@ -178,9 +145,9 @@ class CampaignRequest(BaseModel):
     keyword1: str
     keyword2: str
     keyword3: str
-    budget: int  # Valor total em reais
-    start_date: str  # No formato MM/DD/YYYY
-    end_date: str    # No formato MM/DD/YYYY
+    budget: int
+    start_date: str
+    end_date: str
     price_model: str
     campaign_type: str
     audience_gender: str
@@ -189,237 +156,185 @@ class CampaignRequest(BaseModel):
     devices: list[str]
 
     @field_validator("budget", mode="before")
-    def convert_budget(cls, value):
-        if isinstance(value, str):
-            value = value.replace("$", "").strip()
-            numeric_value = float(value)
-            logging.debug(f"Budget convertido: {numeric_value}")
-            return int(numeric_value)
-        return value
+    def convert_budget(cls, v):
+        if isinstance(v, str):
+            v = v.replace("$","").strip()
+            return int(float(v))
+        return v
 
-    @field_validator("audience_min_age", "audience_max_age", mode="before")
-    def convert_age(cls, value):
-        return int(value) if isinstance(value, str) else value
+    @field_validator("audience_min_age","audience_max_age", mode="before")
+    def convert_age(cls, v):
+        return int(v)
 
     @field_validator("cover_photo", mode="before")
-    def clean_cover_photo(cls, value):
-        if isinstance(value, str):
-            cleaned = value.strip().rstrip(" ;")
-            if cleaned and not urlparse(cleaned).scheme:
-                cleaned = "http://" + cleaned
-            logging.debug(f"Cover photo limpa: {cleaned}")
-            return cleaned
-        return value
+    def clean_cover(cls, v):
+        v = v.strip().rstrip(" ;")
+        if v and not urlparse(v).scheme:
+            v = "http://" + v
+        return v
 
-# Funções para criação de campanha
-def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_total: int, start_date: str, end_date: str) -> str:
-    days = days_between(start_date, end_date)
+# Criação de budget
+def create_campaign_budget(client: GoogleAdsClient, customer_id: str, total: int, start: str, end: str) -> str:
+    days = days_between(start, end)
     if days <= 0:
-        raise Exception("Intervalo de datas inválido.")
-    daily_budget = budget_total / days
-    # Ajusta para que o valor em micros seja um múltiplo do valor mínimo (10.000 micros = 0,01 da moeda)
-    minimum_unit = 10_000  
-    daily_budget_micros = round(daily_budget * 1_000_000 / minimum_unit) * minimum_unit
-    logging.info(f"Budget diário: {daily_budget} reais, {daily_budget_micros} micros (para {days} dias)")
-    
-    campaign_budget_service = client.get_service("CampaignBudgetService")
-    campaign_budget_operation = client.get_type("CampaignBudgetOperation")
-    campaign_budget = campaign_budget_operation.create
-    campaign_budget.name = f"Budget_{uuid.uuid4()}"
-    campaign_budget.amount_micros = daily_budget_micros
-    campaign_budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
-    response = campaign_budget_service.mutate_campaign_budgets(
-        customer_id=customer_id, operations=[campaign_budget_operation]
-    )
-    resource_name = response.results[0].resource_name
-    logging.info(f"Campaign Budget criado: {resource_name}")
-    return resource_name
+        raise Exception("Datas inválidas")
+    daily = total / days
+    unit = 10_000
+    micros = round(daily * 1_000_000 / unit) * unit
+    svc = client.get_service("CampaignBudgetService")
+    op  = client.get_type("CampaignBudgetOperation")
+    budget = op.create
+    budget.name = f"Budget_{uuid.uuid4()}"
+    budget.amount_micros = int(micros)
+    budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+    res = svc.mutate_campaign_budgets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
-def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
-    logging.info("Criando Campaign.")
-    campaign_service = client.get_service("CampaignService")
-    campaign_operation = client.get_type("CampaignOperation")
-    campaign = campaign_operation.create
-    unique_campaign_name = f"{data.campaign_name.strip()}_{uuid.uuid4().hex[:6]}"
-    campaign.name = unique_campaign_name
-    if data.campaign_type.upper() == "DISPLAY":
-        campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
-    else:
-        campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
-    campaign.status = client.enums.CampaignStatusEnum.ENABLED
-    campaign.campaign_budget = budget_resource_name
-    campaign.start_date = format_date(data.start_date)
-    campaign.end_date = format_date(data.end_date)
-    campaign.manual_cpc = client.get_type("ManualCpc")
-    response = campaign_service.mutate_campaigns(
-        customer_id=customer_id, operations=[campaign_operation]
+def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_res: str, data: CampaignRequest) -> str:
+    svc = client.get_service("CampaignService")
+    op  = client.get_type("CampaignOperation")
+    camp = op.create
+    camp.name = f"{data.campaign_name}_{uuid.uuid4().hex[:6]}"
+    camp.advertising_channel_type = (
+        client.enums.AdvertisingChannelTypeEnum.DISPLAY
+        if data.campaign_type.upper()=="DISPLAY"
+        else client.enums.AdvertisingChannelTypeEnum.SEARCH
     )
-    resource_name = response.results[0].resource_name
-    logging.info(f"Campaign criado: {resource_name}")
-    return resource_name
+    camp.status = client.enums.CampaignStatusEnum.ENABLED
+    camp.campaign_budget = budget_res
+    camp.start_date = format_date(data.start_date)
+    camp.end_date   = format_date(data.end_date)
+    res = svc.mutate_campaigns(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
-def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
-    logging.info("Criando Ad Group.")
-    ad_group_service = client.get_service("AdGroupService")
-    ad_group_operation = client.get_type("AdGroupOperation")
-    ad_group = ad_group_operation.create
-    ad_group.name = f"{data.campaign_name.strip()}_AdGroup_{uuid.uuid4().hex[:6]}"
-    ad_group.campaign = campaign_resource_name
-    ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
-    ad_group.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
-    ad_group.cpc_bid_micros = 1_000_000
-    response = ad_group_service.mutate_ad_groups(
-        customer_id=customer_id, operations=[ad_group_operation]
-    )
-    resource_name = response.results[0].resource_name
-    logging.info(f"Ad Group criado: {resource_name}")
-    return resource_name
+def create_ad_group(client: GoogleAdsClient, customer_id: str, camp_res: str, data: CampaignRequest) -> str:
+    svc = client.get_service("AdGroupService")
+    op  = client.get_type("AdGroupOperation")
+    ag  = op.create
+    ag.name = f"{data.campaign_name}_AdGroup_{uuid.uuid4().hex[:6]}"
+    ag.campaign = camp_res
+    ag.status   = client.enums.AdGroupStatusEnum.ENABLED
+    ag.type_    = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
+    ag.cpc_bid_micros = 1_000_000
+    res = svc.mutate_ad_groups(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
-def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest):
-    logging.info("Criando Display Keywords no Ad Group.")
-    ad_group_criterion_service = client.get_service("AdGroupCriterionService")
-    operations = []
-    def make_keyword_op(keyword_text: str):
+def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, adg_res: str, data: CampaignRequest):
+    svc = client.get_service("AdGroupCriterionService")
+    ops = []
+    def mk_kw(kw):
         op = client.get_type("AdGroupCriterionOperation")
-        criterion = op.create
-        criterion.ad_group = ad_group_resource_name
-        criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
-        criterion.keyword.text = keyword_text
-        criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
+        c = op.create
+        c.ad_group = adg_res
+        c.status   = client.enums.AdGroupCriterionStatusEnum.ENABLED
+        c.keyword.text = kw
+        c.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
         return op
     for kw in [data.keyword1, data.keyword2, data.keyword3]:
         if kw:
-            operations.append(make_keyword_op(kw))
-    if operations:
-        response = ad_group_criterion_service.mutate_ad_group_criteria(
-            customer_id=customer_id, operations=operations
-        )
-        for result in response.results:
-            logging.info(f"Ad Group Criterion criado: {result.resource_name}")
+            ops.append(mk_kw(kw))
+    if ops:
+        svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
 
-def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
-    logging.info("Criando Responsive Display Ad.")
-    ad_group_ad_service = client.get_service("AdGroupAdService")
-    ad_group_ad_operation = client.get_type("AdGroupAdOperation")
-    ad_group_ad = ad_group_ad_operation.create
-    ad_group_ad.ad_group = ad_group_resource_name
-    ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
-    ad = ad_group_ad.ad
+# Corrigida: instanciação correta dos assets e text assets
+def create_responsive_display_ad(client: GoogleAdsClient,
+                                 customer_id: str,
+                                 ad_group_resource_name: str,
+                                 data: CampaignRequest) -> str:
+    logger.info("Criando Responsive Display Ad.")
+    svc = client.get_service("AdGroupAdService")
+    op  = client.get_type("AdGroupAdOperation")
+    aga = op.create
+    aga.ad_group = ad_group_resource_name
+    aga.status   = client.enums.AdGroupAdStatusEnum.ENABLED
+
+    ad = aga.ad
     ad.final_urls.append(data.final_url)
-    
+
     # Headlines
-    headline1 = client.get_type("AdTextAsset")
-    headline1.text = data.keyword1 if data.keyword1 else data.campaign_name.strip()
-    ad.responsive_display_ad.headlines.append(headline1)
-    
-    headline2 = client.get_type("AdTextAsset")
-    headline2.text = data.keyword2
-    ad.responsive_display_ad.headlines.append(headline2)
-    
-    headline3 = client.get_type("AdTextAsset")
-    headline3.text = data.keyword3
-    ad.responsive_display_ad.headlines.append(headline3)
-    
-    # Descrições
-    desc1 = client.get_type("AdTextAsset")
-    desc1.text = data.campaign_description
-    ad.responsive_display_ad.descriptions.append(desc1)
-    
-    desc2 = client.get_type("AdTextAsset")
-    desc2.text = data.objective
-    ad.responsive_display_ad.descriptions.append(desc2)
-    
-    ad.responsive_display_ad.business_name = data.campaign_name.strip()
-    ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
-    
-    if data.cover_photo:
-        if data.cover_photo.startswith("http"):
-            marketing_asset_resource = upload_image_asset(client, customer_id, data.cover_photo, process=True)
-            square_asset_resource = upload_square_image_asset(client, customer_id, data.cover_photo)
-        else:
-            marketing_asset_resource = data.cover_photo
-            square_asset_resource = data.cover_photo
-        img = client.get_type("AdImageAsset")
-        img.asset = marketing_asset_resource
-        ad.responsive_display_ad.marketing_images.append(img)
-        square_img = client.get_type("AdImageAsset")
-        square_img.asset = square_asset_resource
-        ad.responsive_display_ad.square_marketing_images.append(square_img)
-    else:
-        raise Exception("O campo 'cover_photo' está vazio.")
-    
-    response = ad_group_ad_service.mutate_ad_group_ads(
-        customer_id=customer_id, operations=[ad_group_ad_operation]
-    )
-    resource_name = response.results[0].resource_name
-    logging.info(f"Responsive Display Ad criado: {resource_name}")
-    return resource_name
+    for txt in [data.keyword1 or data.campaign_name, data.keyword2, data.keyword3]:
+        asset = client.get_type("AdTextAsset")()
+        asset.text = txt
+        ad.responsive_display_ad.headlines.append(asset)
 
-def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
-    logging.info("Aplicando targeting na Campaign.")
-    campaign_criterion_service = client.get_service("CampaignCriterionService")
-    operations = []
-    if data.audience_gender and data.audience_gender.upper() in ["MALE", "FEMALE"]:
-        desired_gender = data.audience_gender.upper()
-        exclusions = ["FEMALE", "UNDETERMINED"] if desired_gender == "MALE" else ["MALE", "UNDETERMINED"]
-        for gender_to_exclude in exclusions:
+    # Descriptions
+    for desc in [data.campaign_description, data.objective]:
+        asset = client.get_type("AdTextAsset")()
+        asset.text = desc
+        ad.responsive_display_ad.descriptions.append(asset)
+
+    ad.responsive_display_ad.business_name = data.campaign_name
+    long_hl = client.get_type("AdTextAsset")()
+    long_hl.text = f"{data.campaign_name} – {data.objective}"
+    ad.responsive_display_ad.long_headline.CopyFrom(long_hl)
+
+    # Images
+    if not data.cover_photo:
+        raise Exception("cover_photo vazio")
+
+    mkt_res  = upload_image_asset(client, customer_id, data.cover_photo, process=True)
+    sqr_res  = upload_square_image_asset(client, customer_id, data.cover_photo)
+
+    img1 = client.get_type("AdImageAsset")()
+    img1.asset = mkt_res
+    ad.responsive_display_ad.marketing_images.append(img1)
+
+    img2 = client.get_type("AdImageAsset")()
+    img2.asset = sqr_res
+    ad.responsive_display_ad.square_marketing_images.append(img2)
+
+    res = svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
+
+def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, camp_res: str, data: CampaignRequest):
+    svc = client.get_service("CampaignCriterionService")
+    ops = []
+    if data.audience_gender.upper() in ["MALE","FEMALE"]:
+        exclude = ["FEMALE","UNDETERMINED"] if data.audience_gender.upper()=="MALE" else ["MALE","UNDETERMINED"]
+        for g in exclude:
             op = client.get_type("CampaignCriterionOperation")
-            criterion = op.create
-            criterion.campaign = campaign_resource_name
-            criterion.gender.type_ = client.enums.GenderTypeEnum[gender_to_exclude]
-            criterion.negative = True
-            criterion.status = client.enums.CampaignCriterionStatusEnum.ENABLED
-            operations.append(op)
-    if operations:
-        response = campaign_criterion_service.mutate_campaign_criteria(
-            customer_id=customer_id, operations=operations
-        )
-        for result in response.results:
-            logging.info(f"Campaign Criterion criado: {result.resource_name}")
+            c = op.create
+            c.campaign = camp_res
+            c.gender.type_ = client.enums.GenderTypeEnum[g]
+            c.negative = True
+            ops.append(op)
+    if ops:
+        svc.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
 
-# Endpoint de Health Check
 @app.get("/")
 async def health_check():
     return {"status": "ok"}
 
-# Função para processamento pesado em background
-def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest):
+def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
     try:
-        customer_id = get_customer_id(client)
-        logging.info(f"Customer ID: {customer_id}")
-        budget_resource_name = create_campaign_budget(
-            client, customer_id, request_data.budget, request_data.start_date, request_data.end_date
-        )
-        campaign_resource_name = create_campaign_resource(client, customer_id, budget_resource_name, request_data)
-        ad_group_resource_name = create_ad_group(client, customer_id, campaign_resource_name, request_data)
-        create_ad_group_keywords(client, customer_id, ad_group_resource_name, request_data)
-        ad_group_ad_resource_name = create_responsive_display_ad(client, customer_id, ad_group_resource_name, request_data)
-        apply_targeting_criteria(client, customer_id, campaign_resource_name, request_data)
-        logging.info("Processamento da campanha concluído com sucesso.")
-    except Exception as e:
-        logging.exception("Erro durante o processamento da campanha.")
+        cid       = get_customer_id(client)
+        budget    = create_campaign_budget(client, cid, data.budget, data.start_date, data.end_date)
+        camp_res  = create_campaign_resource(client, cid, budget, data)
+        adg_res   = create_ad_group(client, cid, camp_res, data)
+        create_ad_group_keywords(client, cid, adg_res, data)
+        create_responsive_display_ad(client, cid, adg_res, data)
+        apply_targeting_criteria(client, cid, camp_res, data)
+        logger.info("Campanha Google Ads criada com sucesso.")
+    except Exception:
+        logger.exception("Erro no processamento da campanha.")
 
-# Endpoint que dispara o processamento em background
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
     try:
-        config_dict = {
-            "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
-            "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
-            "client_secret": "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",
-            "refresh_token": request_data.refresh_token,
-            "use_proto_plus": True
+        cfg = {
+            "developer_token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
+            "client_id":       os.getenv("GOOGLE_ADS_CLIENT_ID"),
+            "client_secret":   os.getenv("GOOGLE_ADS_CLIENT_SECRET"),
+            "refresh_token":   request_data.refresh_token,
+            "use_proto_plus":  True
         }
-        logging.info("Inicializando Google Ads Client.")
-        client = GoogleAdsClient.load_from_dict(config_dict)
+        client = GoogleAdsClient.load_from_dict(cfg)
     except Exception as e:
-        logging.error("Erro ao inicializar o Google Ads Client.", exc_info=True)
+        logger.error("Erro ao inicializar Google Ads Client", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     background_tasks.add_task(process_campaign_task, client, request_data)
     return {"status": "processing"}
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}.")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
