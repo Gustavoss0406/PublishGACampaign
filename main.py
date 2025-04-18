@@ -35,7 +35,7 @@ async def preprocess_request(request: Request, call_next):
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
     # 0) Remove o ';' que vier dentro das aspas antes de vírgula ou fechamento
-    text = re.sub(r'";\s*(?=[,}\]])', '",', text)
+    text = re.sub(r'";(?=[,}\]])', '",', text)
     # 1) Remove qualquer ';' imediatamente antes de vírgula, chave ou colchete
     text = re.sub(r';+(?=\s*[,}\]])', '', text)
     # 2) Remove vírgulas finais antes de '}' ou ']'
