@@ -33,22 +33,17 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # 1) Remove qualquer ';' logo após fechamento de string antes de vírgula
-    text = re.sub(r'";+\s*,', '",', text)
-    # 2) Remove qualquer ';' logo após fechamento de string antes de } ou ]
-    text = re.sub(r'";+\s*(?=[}\]])', '"', text)
-    # 3) Remove ';' antes de vírgulas isoladas
-    text = re.sub(r';\s*,', ',', text)
-    # 4) Remove ';' antes de fechamento de objeto/array
-    text = re.sub(r';\s*(?=[}\]])', '', text)
-    # 5) Remove vírgulas finais antes de } ou ]
-    text = re.sub(r',\s*(?=[}\]])', '', text)
+    # Remove any semicolons immediately before a comma or closing brace/bracket
+    text = re.sub(r';+(?=\s*[,}\]])', '', text)
+    # Remove any trailing commas before closing brace/bracket
+    text = re.sub(r',+(?=\s*[}\]])', '', text)
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
 
     async def receive():
         return {"type": "http.request", "body": text.encode("utf-8")}
     request._receive = receive
+
     return await call_next(request)
 
 # ─── Pydantic model ─────────────────────────────────────────────────────────────
@@ -75,7 +70,9 @@ class CampaignRequest(BaseModel):
 
     @field_validator("budget", mode="before")
     def convert_budget(cls, v):
-        return int(float(v.replace("$", ""))) if isinstance(v, str) else v
+        if isinstance(v, str):
+            return int(float(v.replace("$", "")))
+        return v
 
     @field_validator("audience_min_age", "audience_max_age", mode="before")
     def convert_age(cls, v):
@@ -101,7 +98,7 @@ def get_customer_id(client: GoogleAdsClient) -> str:
         raise Exception("Nenhum customer acessível")
     return res.resource_names[0].split("/")[-1]
 
-# ─── Background task: criar apenas a campanha (budget já existe) ────────────────
+# ─── Background task: cria só a campanha (budget já existe) ────────────────────
 def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_res: str):
     try:
         logger.info(">> [BG] Criando campanha no Google Ads")
@@ -114,8 +111,8 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         is_display = data.campaign_type.upper() == "DISPLAY"
         if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
-            # Smart Bidding: maximize conversions
-            max_conv = client.get_type("MaximizeConversions")  # já é instância
+            # Smart Bidding: maximize_conversions
+            max_conv = client.get_type("MaximizeConversions")
             camp.maximize_conversions.CopyFrom(max_conv)
         else:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
@@ -158,7 +155,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Falha na autenticação Google Ads")
         raise HTTPException(400, "Erro de autenticação no Google Ads")
 
-    # Cria orçamento SÍNCRONO para capturar “Too low”
+    # Cria budget síncrono para capturar “Too low”
     budget_svc = client.get_service("CampaignBudgetService")
     budget_op = client.get_type("CampaignBudgetOperation")
     budget = budget_op.create
