@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ─── Middleware de pré‑processamento ────────────────────────────────────────────
@@ -33,16 +35,10 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # 1) remove semicolons imediatamente após fechamento de string e antes de vírgula
-    text = re.sub(r'"\s*;+\s*,', '",', text)
-    # 2) remove semicolons após fechamento de string e antes de } ou ]
-    text = re.sub(r'"\s*;+\s*(?=[}\]])', '"', text)
-    # 3) remove qualquer ';' antes de vírgula
-    text = re.sub(r';\s*,', ',', text)
-    # 4) remove qualquer ';' antes de fechamento de objeto/array
-    text = re.sub(r';\s*(?=[}\]])', '', text)
-    # 5) remove vírgula final antes de '}' ou ']'
-    text = re.sub(r',\s*(?=[}\]])', '', text)
+    # Remove semicolons immediately before comma, '}', or ']'
+    text = re.sub(r';+(?=\s*[,}\]])', '', text)
+    # Also remove any trailing commas before '}' or ']'
+    text = re.sub(r',+(?=\s*[}\]])', '', text)
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
 
@@ -116,8 +112,8 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
             # Smart Bidding: maximize conversions
-            maximize_conversions = client.get_type("MaximizeConversions")  # already message instance
-            camp.maximize_conversions.CopyFrom(maximize_conversions)
+            max_conv = client.get_type("MaximizeConversions")  # already a message instance
+            camp.maximize_conversions.CopyFrom(max_conv)
         else:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
             camp.manual_cpc.enhanced_cpc_enabled = True
@@ -151,6 +147,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         "use_proto_plus":  True,
     }
 
+    # Inicializa client e obtém login_customer_id
     try:
         client = GoogleAdsClient.load_from_dict(cfg)
         login_cid = get_customer_id(client)
