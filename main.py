@@ -14,7 +14,7 @@ from google.ads.googleads.errors import GoogleAdsException
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,11 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # Remove any semicolons immediately before a comma or closing brace/bracket
+    # 1) Remove semicolons right after a closing quote before , } or ]
+    text = re.sub(r'"\s*;\s*(?=[,}\]])', '"', text)
+    # 2) Remove any semicolons immediately before , } or ]
     text = re.sub(r';+(?=\s*[,}\]])', '', text)
-    # Remove any trailing commas before closing brace/bracket
+    # 3) Remove any trailing commas before } or ]
     text = re.sub(r',+(?=\s*[}\]])', '', text)
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
@@ -70,9 +72,7 @@ class CampaignRequest(BaseModel):
 
     @field_validator("budget", mode="before")
     def convert_budget(cls, v):
-        if isinstance(v, str):
-            return int(float(v.replace("$", "")))
-        return v
+        return int(float(v.replace("$", ""))) if isinstance(v, str) else v
 
     @field_validator("audience_min_age", "audience_max_age", mode="before")
     def convert_age(cls, v):
@@ -111,7 +111,6 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         is_display = data.campaign_type.upper() == "DISPLAY"
         if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
-            # Smart Bidding: maximize_conversions
             max_conv = client.get_type("MaximizeConversions")
             camp.maximize_conversions.CopyFrom(max_conv)
         else:
@@ -134,7 +133,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     if not request_data.final_url:
         raise HTTPException(400, "Campo final_url é obrigatório")
 
-    # Tokens fictícios (em produção, use env vars/BaseSettings)
+    # Tokens fictícios (em produção, use env vars ou BaseSettings)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
     CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
     CSECRET   = "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"
@@ -155,7 +154,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Falha na autenticação Google Ads")
         raise HTTPException(400, "Erro de autenticação no Google Ads")
 
-    # Cria budget síncrono para capturar “Too low”
+    # Cria orçamento síncrono para capturar “Too low”
     budget_svc = client.get_service("CampaignBudgetService")
     budget_op = client.get_type("CampaignBudgetOperation")
     budget = budget_op.create
