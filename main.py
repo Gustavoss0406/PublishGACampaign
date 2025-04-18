@@ -2,10 +2,9 @@ import logging
 import sys
 import uuid
 import re
-from datetime import datetime, date
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator, constr
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
@@ -18,6 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── FastAPI setup & CORS ───────────────────────────────────────────────────────
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -25,7 +25,7 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# ─── Middleware para limpeza de JSON mal‑formatado ──────────────────────────────
+# ─── Middleware: limpa JSON mal‑formatado ───────────────────────────────────────
 @app.middleware("http")
 async def preprocess_request(request: Request, call_next):
     if request.headers.get("content-type", "").startswith("application/json"):
@@ -34,18 +34,17 @@ async def preprocess_request(request: Request, call_next):
         logger.debug(f"Raw request body:\n{text}")
 
         # 1) corrige '";,' → '",'
-        text = re.sub(r'";\s*,', '",', text)
-        # 2) corrige '";}' → '"}'
+        text = text.replace('";,', '",')
+        # 2) corrige '";}' ou '";]' → '"}' ou '"]'
         text = re.sub(r'";\s*}', '"}', text)
         text = re.sub(r'";\s*]', '"]', text)
-        # 3) remove semicolons antes de vírgula/fechamento
-        text = re.sub(r';+(?=\s*[,}\]])', '', text)
-        # 4) remove vírgulas finais antes de fechamento
-        text = re.sub(r',+(?=\s*[}\]])', '', text)
+        # 3) remove qualquer ';' imediatamente antes de ',', '}' ou ']'
+        text = re.sub(r';(?=\s*[,}\]])', '', text)
+        # 4) remove vírgulas finais antes de '}' ou ']'
+        text = re.sub(r',(?=\s*[}\]])', '', text)
 
         logger.debug(f"Cleaned request body:\n{text}")
 
-        # injeta JSON limpo
         async def receive():
             return {"type": "http.request", "body": text.encode("utf-8")}
         request._receive = receive
@@ -81,7 +80,7 @@ class CampaignPayload(BaseModel):
     @field_validator("start_date", "end_date", mode="before")
     def validate_dates(cls, v):
         try:
-            return datetime.strptime(v, "%m/%d/%Y").date()
+            return datetime.strptime(v, "%m/%d/%Y").strftime("%Y%m%d")
         except Exception:
             raise ValueError("Date must be MM/DD/YYYY")
 
@@ -94,64 +93,75 @@ class CampaignPayload(BaseModel):
             v = "http://" + v
         return v
 
+# ─── Endpoint principal ─────────────────────────────────────────────────────────
 @app.post("/create_campaign")
-async def create_campaign_endpoint(payload: CampaignPayload, background_tasks: BackgroundTasks):
-    # valida budget mínimo $1.00
-    if payload.budget < 1.0:
+async def create_campaign(request_data: CampaignPayload, background_tasks: BackgroundTasks):
+    # 1) validações iniciais
+    if not request_data.final_url:
+        raise HTTPException(400, "Campo final_url é obrigatório")
+    if request_data.budget < 1.0:
         raise HTTPException(422, "Budget muito baixo. Mínimo $1.00")
 
-    # configurações fictícias do Google Ads
+    # 2) credenciais fictícias Google Ads (apenas testes)
     creds = {
         "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
-        "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
-        "client_secret": "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",
-        "refresh_token": payload.refresh_token,
-        "use_proto_plus": True,
+        "client_id":       "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
+        "client_secret":   "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",
+        "refresh_token":   request_data.refresh_token,
+        "use_proto_plus":  True,
     }
+
+    # 3) inicializa GoogleAdsClient
     try:
         client = GoogleAdsClient.load_from_dict(creds, version="v16")
-        login_cid = client.get_service("CustomerService").list_accessible_customers().resource_names[0].split("/")[-1]
+        svc = client.get_service("CustomerService")
+        login_cid = svc.list_accessible_customers().resource_names[0].split("/")[-1]
         client.login_customer_id = login_cid
     except Exception:
         raise HTTPException(400, "Falha de autenticação no Google Ads")
 
-    # agendar criação em background
-    background_tasks.add_task(create_campaign, client, payload)
-    return {"message": "Criação de campanha agendada em background."}
+    # 4) agendar criação em background
+    background_tasks.add_task(_create_campaign_task, client, request_data)
+    return {"status": "processing"}
 
-def create_campaign(client: GoogleAdsClient, p: CampaignPayload):
+# ─── Função que executa em background ───────────────────────────────────────────
+def _create_campaign_task(client: GoogleAdsClient, data: CampaignPayload):
     cid = client.login_customer_id
-    # 1) cria budget
+
+    # ─── cria budget ─────────────────────────────────────────────────────────────
     budget_svc = client.get_service("CampaignBudgetService")
-    op = client.get_type("CampaignBudgetOperation")
-    b = op.create
-    b.name = f"{p.campaign_name} Budget {uuid.uuid4()}"
-    b.amount_micros = int(p.budget * 1_000_000)
+    op_budget = client.get_type("CampaignBudgetOperation")
+    b = op_budget.create
+    b.name = f"{data.campaign_name} Budget {uuid.uuid4()}"
+    b.amount_micros = int(data.budget * 1_000_000)
     b.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+
     try:
-        res = budget_svc.mutate_campaign_budgets(customer_id=cid, operations=[op])
-        budget_res = res.results[0].resource_name
+        res_budget = budget_svc.mutate_campaign_budgets(
+            customer_id=cid, operations=[op_budget]
+        )
+        budget_res = res_budget.results[0].resource_name
     except GoogleAdsException as e:
         for err in e.failure.errors:
-            if "Too low" in err.message:
-                print("Budget muito baixo para criar.")
+            if "too low" in err.message.lower():
+                logger.error("💰 Budget muito baixo: %s", err.message)
                 return
-        print("Erro ao criar budget:", e)
+        logger.exception("Erro ao criar budget no Google Ads")
         return
 
-    # 2) cria campanha
+    # ─── cria campanha ───────────────────────────────────────────────────────────
     camp_svc = client.get_service("CampaignService")
-    op2 = client.get_type("CampaignOperation")
-    c = op2.create
-    c.name = p.campaign_name
+    op_camp = client.get_type("CampaignOperation")
+    c = op_camp.create
+    c.name = data.campaign_name
     c.campaign_budget = budget_res
     c.status = client.enums.CampaignStatusEnum.PAUSED
-    c.start_date = p.start_date.strftime("%Y-%m-%d")
-    c.end_date = p.end_date.strftime("%Y-%m-%d")
+    c.start_date = data.start_date
+    c.end_date   = data.end_date
 
-    # define bidding based on objective
-    obj = p.objective.lower()
-    if obj in ["vendas", "leads", "promover site/app"]:
+    # define estratégia de lance por objective
+    obj = data.objective.strip().lower()
+    if obj in {"vendas", "leads", "promover site/app"}:
         ts = client.get_type("TargetSpend")()
         c.target_spend.CopyFrom(ts)
     elif obj == "alcance de marca":
@@ -160,11 +170,11 @@ def create_campaign(client: GoogleAdsClient, p: CampaignPayload):
         tis.location_fraction_micros = 1_000_000
         c.target_impression_share.CopyFrom(tis)
     else:
-        print("Objetivo inválido:", p.objective)
+        logger.error("Objetivo inválido recebido: %s", data.objective)
         return
 
     try:
-        resp = camp_svc.mutate_campaigns(customer_id=cid, operations=[op2])
-        print("Campanha criada:", resp.results[0].resource_name)
+        res_camp = camp_svc.mutate_campaigns(customer_id=cid, operations=[op_camp])
+        logger.info("✅ Campanha criada: %s", res_camp.results[0].resource_name)
     except GoogleAdsException as e:
-        print("Erro ao criar campanha:", e)
+        logger.exception("Erro ao criar campanha no Google Ads")
