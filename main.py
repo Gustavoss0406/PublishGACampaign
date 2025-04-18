@@ -35,7 +35,7 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # 1) remove semicolons imediatamente após fechamento de string
+    # 1) remove semicolons após strings
     text = re.sub(r'"\s*;+', '"', text)
     # 2) remove ';' antes de vírgulas
     text = re.sub(r';\s*,', ',', text)
@@ -115,7 +115,9 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         is_display = data.campaign_type.upper() == "DISPLAY"
         if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
-            camp.bidding_strategy_type = client.enums.BiddingStrategyTypeEnum.MAXIMIZE_CLICKS
+            # estratégia de Smart Bidding: maximize conversions
+            maximize_conversions = client.get_type("MaximizeConversions")()
+            camp.maximize_conversions.CopyFrom(maximize_conversions)
         else:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
             camp.manual_cpc.enhanced_cpc_enabled = True
