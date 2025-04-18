@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 # ─── FastAPI app & CORS ─────────────────────────────────────────────────────────
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,11 +31,12 @@ app.add_middleware(
 # ─── Middleware de pré‑processamento ────────────────────────────────────────────
 @app.middleware("http")
 async def preprocess_request(request: Request, call_next):
-    # 1) lê o corpo cru
-    body = await request.body()
-    text = body.decode("utf-8", errors="ignore")
+    raw = await request.body()
+    text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
+    # 1) remove semicolons imediatamente após fechamento de string
+    text = re.sub(r'"\s*;+', '"', text)
     # 2) remove ';' antes de vírgulas
     text = re.sub(r';\s*,', ',', text)
     # 3) remove ';' antes de fechamento de objeto/array
@@ -46,12 +46,10 @@ async def preprocess_request(request: Request, call_next):
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
 
-    # 5) injeta de volta no request
     async def receive():
         return {"type": "http.request", "body": text.encode("utf-8")}
     request._receive = receive
 
-    # 6) prossegue com o fluxo
     return await call_next(request)
 
 # ─── Pydantic model ─────────────────────────────────────────────────────────────
@@ -78,7 +76,7 @@ class CampaignRequest(BaseModel):
 
     @field_validator("budget", mode="before")
     def convert_budget(cls, v):
-        return int(float(v)) if isinstance(v, str) else v
+        return int(float(v.replace("$", ""))) if isinstance(v, str) else v
 
     @field_validator("audience_min_age", "audience_max_age", mode="before")
     def convert_age(cls, v):
@@ -105,11 +103,10 @@ def get_customer_id(client: GoogleAdsClient) -> str:
     return res.resource_names[0].split("/")[-1]
 
 # ─── Background task: cria só a campanha (budget já existe) ────────────────────
-def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_resource: str):
+def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_res: str):
     try:
         logger.info(">> [BG] Criando campanha no Google Ads")
-        customer_id = client.login_customer_id
-
+        cid = client.login_customer_id
         svc = client.get_service("CampaignService")
         op = client.get_type("CampaignOperation")
         camp = op.create
@@ -124,14 +121,11 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
             camp.manual_cpc.enhanced_cpc_enabled = True
 
         camp.status = client.enums.CampaignStatusEnum.PAUSED
-        camp.campaign_budget = budget_resource
+        camp.campaign_budget = budget_res
         camp.start_date = format_date(data.start_date)
         camp.end_date   = format_date(data.end_date)
 
-        resp = svc.mutate_campaigns(
-            customer_id=customer_id,
-            operations=[op],
-        )
+        resp = svc.mutate_campaigns(customer_id=cid, operations=[op])
         logger.info(f"[BG] Campanha criada: {resp.results[0].resource_name}")
     except Exception:
         logger.exception("‼️ [BG] Erro dentro de create_campaign_bg")
@@ -139,11 +133,10 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
 # ─── Endpoint principal ─────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
-    # Campo final_url é obrigatório
     if not request_data.final_url:
         raise HTTPException(400, "Campo final_url é obrigatório")
 
-    # Tokens fictícios (em produção, use env vars ou BaseSettings)
+    # Tokens fictícios (em produção, use env vars/BaseSettings)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
     CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
     CSECRET   = "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"
@@ -156,7 +149,6 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         "use_proto_plus":  True,
     }
 
-    # Inicializa o client e obtém login_customer_id
     try:
         client = GoogleAdsClient.load_from_dict(cfg)
         login_cid = get_customer_id(client)
@@ -165,8 +157,8 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Falha na autenticação Google Ads")
         raise HTTPException(400, "Erro de autenticação no Google Ads")
 
-    # Cria o budget SÍNCRONO para capturar imediatamente erros como “Too low”
-    budget_service = client.get_service("CampaignBudgetService")
+    # Cria budget síncrono para capturar “Too low”
+    budget_svc = client.get_service("CampaignBudgetService")
     budget_op = client.get_type("CampaignBudgetOperation")
     budget = budget_op.create
     budget.name = f"{request_data.campaign_name} Budget {uuid.uuid4()}"
@@ -174,7 +166,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
 
     try:
-        resp_budget = budget_service.mutate_campaign_budgets(
+        resp_budget = budget_svc.mutate_campaign_budgets(
             customer_id=client.login_customer_id,
             operations=[budget_op],
         )
