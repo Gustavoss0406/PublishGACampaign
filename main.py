@@ -136,9 +136,9 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         raise HTTPException(status_code=400, detail="Campo final_url é obrigatório")
 
     # 2) Validate env vars for Google Ads
-    DEV_TOKEN = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN")
-    CID       = os.getenv("GOOGLE_ADS_CLIENT_ID")
-    CSECRET   = os.getenv("GOOGLE_ADS_CLIENT_SECRET")
+    DEV_TOKEN = os.getenv("D4yv61IQ8R0JaE5dxrd1Uw")
+    CID       = os.getenv("167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com")
+    CSECRET   = os.getenv("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")
     missing = [name for name,val in [
         ("GOOGLE_ADS_DEVELOPER_TOKEN", DEV_TOKEN),
         ("GOOGLE_ADS_CLIENT_ID",       CID),
