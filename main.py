@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # ─── FastAPI app & CORS ─────────────────────────────────────────────────────────
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,7 +108,8 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         campaign.name = data.campaign_name
 
         # definir tipo de canal
-        if data.campaign_type.upper() == "DISPLAY":
+        is_display = data.campaign_type.upper() == "DISPLAY"
+        if is_display:
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
         else:
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
@@ -117,8 +117,13 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         campaign.status = client.enums.CampaignStatusEnum.PAUSED
         campaign.campaign_budget = budget_resource
 
-        # Manual CPC: apenas habilita o enhanced CPC diretamente
-        campaign.manual_cpc.enhanced_cpc_enabled = True
+        # Bidding
+        if not is_display:
+            # Manual CPC só para SEARCH
+            campaign.manual_cpc.enhanced_cpc_enabled = True
+        else:
+            # Para DISPLAY, por exemplo, maximize clicks
+            campaign.maximize_clicks.CopyFrom(client.get_type("MaximizeClicks")())
 
         # Datas
         campaign.start_date = format_date(data.start_date)
@@ -174,9 +179,9 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Erro ao obter login_customer_id")
         raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id do Google Ads")
 
-    # Durante desenvolvimento você pode chamar direto pra debugar:
-    # process_campaign_task(client, request_data)
-    # Em produção, deixe em background:
+    # Em produção, mantém em background:
     background_tasks.add_task(process_campaign_task, client, request_data)
+    # Para debug imediato, você pode chamar synchronously:
+    # process_campaign_task(client, request_data)
 
     return {"status": "processing"}
