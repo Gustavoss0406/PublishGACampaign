@@ -1,23 +1,13 @@
 import logging
 import sys
-import os
 import uuid
 import re
-import time
 import json
-import requests
-from io import BytesIO
-from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
-from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, status
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
-from google.ads.googleads.errors import GoogleAdsException
-from PIL import Image
+from pydantic import BaseModel, field_validator, ConfigDict
 
 # ─── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -27,16 +17,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── FastAPI lifecycle ─────────────────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Startup: Aplicação iniciada.")
-    yield
-    logger.info("Shutdown: Aplicação encerrada.")
+# ─── FastAPI app & CORS ─────────────────────────────────────────────────────────
+app = FastAPI()
 
-app = FastAPI(lifespan=lifespan)
-
-# ─── CORS ────────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,25 +31,6 @@ app.add_middleware(
 # ─── Helpers ────────────────────────────────────────────────────────────────────
 def format_date(date_str: str) -> str:
     return datetime.strptime(date_str, "%m/%d/%Y").strftime("%Y%m%d")
-
-def days_between(start_date: str, end_date: str) -> int:
-    dt_start = datetime.strptime(start_date, "%m/%d/%Y")
-    dt_end   = datetime.strptime(end_date,   "%m/%d/%Y")
-    return (dt_end - dt_start).days + 1
-
-# ─── Request logging middleware ─────────────────────────────────────────────────
-@app.middleware("http")
-async def preprocess_request(request: Request, call_next):
-    body = await request.body()
-    text = body.decode("utf-8", errors="ignore")
-    logger.info(f"{request.method} {request.url}")
-    logger.debug(f"Raw request body:\n{text}")
-    # clean up stray terminators in JSON
-    cleaned = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', text, flags=re.DOTALL)
-    async def receive():
-        return {"type":"http.request","body": cleaned.encode("utf-8")}
-    request._receive = receive
-    return await call_next(request)
 
 # ─── Pydantic model ─────────────────────────────────────────────────────────────
 class CampaignRequest(BaseModel):
@@ -105,7 +69,7 @@ class CampaignRequest(BaseModel):
         v = v.strip().rstrip(" ;")
         if v.lower() == "null" or not v:
             return ""
-        if not urlparse(v).scheme:
+        if not re.match(r"^https?://", v):
             v = "http://" + v
         return v
 
@@ -117,39 +81,67 @@ def get_customer_id(client: GoogleAdsClient) -> str:
         raise Exception("Nenhum customer acessível")
     return res.resource_names[0].split("/")[-1]
 
-# (Image processing and asset upload functions omitted for brevity)
-
 # ─── Background task ───────────────────────────────────────────────────────────
 def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
-    # ... existing logic ...
-    pass
+    logger.info(">> Iniciando criação de campanha no Google Ads")
+    customer_id = client.login_customer_id
+
+    # 1) Criar budget
+    budget_service = client.get_service("CampaignBudgetService")
+    budget_op = client.get_type("CampaignBudgetOperation")
+    budget = budget_op.create
+    budget.name = f"{data.campaign_name} Budget {uuid.uuid4()}"
+    budget.amount_micros = data.budget * 1_000_000
+    budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+
+    resp_budget = budget_service.mutate_campaign_budgets(
+        customer_id=customer_id,
+        operations=[budget_op],
+    )
+    budget_resource = resp_budget.results[0].resource_name
+    logger.info(f"Budget criado: {budget_resource}")
+
+    # 2) Criar campanha
+    campaign_service = client.get_service("CampaignService")
+    camp_op = client.get_type("CampaignOperation")
+    campaign = camp_op.create
+    campaign.name = data.campaign_name
+    # channel type
+    if data.campaign_type.upper() == "DISPLAY":
+        campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
+    else:
+        campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
+    campaign.status = client.enums.CampaignStatusEnum.PAUSED
+    campaign.campaign_budget = budget_resource
+    # Manual CPC
+    campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc")())
+    # Datas
+    campaign.start_date = format_date(data.start_date)
+    campaign.end_date   = format_date(data.end_date)
+
+    resp_camp = campaign_service.mutate_campaigns(
+        customer_id=customer_id,
+        operations=[camp_op],
+    )
+    campaign_resource = resp_camp.results[0].resource_name
+    logger.info(f"Campanha criada: {campaign_resource}")
+    logger.info(">> Fim da criação de campanha.")
 
 # ─── Main endpoint ─────────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
-    # Log the entire parsed request model
-    logger.debug("Parsed request data:\n%s", json.dumps(request_data.model_dump(), indent=2, default=str))
+    logger.debug("Parsed request data:\n%s", json.dumps(request_data.model_dump(), indent=2))
 
-    # 1) Validate final_url
     if not request_data.final_url:
         logger.error("Validation error: final_url is empty")
         raise HTTPException(status_code=400, detail="Campo final_url é obrigatório")
 
-    # 2) Assign fictitious tokens diretamente
+    # Tokens fictícios (substitua pelos seus em produção!)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
     CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
     CSECRET   = "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"
 
-    missing = [name for name,val in [
-        ("GOOGLE_ADS_DEVELOPER_TOKEN", DEV_TOKEN),
-        ("GOOGLE_ADS_CLIENT_ID",       CID),
-        ("GOOGLE_ADS_CLIENT_SECRET",   CSECRET),
-    ] if not val]
-    if missing:
-        logger.error("Missing env vars: %s", missing)
-        raise HTTPException(status_code=500, detail=f"Faltando vars: {', '.join([n for n,_ in missing])}")
-
-    # 3) Build GoogleAdsClient config
+    # Monta config e inicializa client
     cfg = {
         "developer_token": DEV_TOKEN,
         "client_id":       CID,
@@ -162,21 +154,20 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     try:
         client = GoogleAdsClient.load_from_dict(cfg)
     except Exception:
-        logger.exception("Failed to initialize GoogleAdsClient")
+        logger.exception("Falha ao inicializar GoogleAdsClient")
         raise HTTPException(
             status_code=400,
             detail="Falha ao inicializar GoogleAdsClient: verifique client_id/secret e refresh_token"
         )
 
-    # 4) Discover login_customer_id
     try:
         login_cid = get_customer_id(client)
         client.login_customer_id = login_cid
-        logger.info("Using login_customer_id = %s", login_cid)
+        logger.info(f"Usando login_customer_id = {login_cid}")
     except Exception:
-        logger.exception("Failed to get login_customer_id")
+        logger.exception("Erro ao obter login_customer_id")
         raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id do Google Ads")
 
-    # 5) Schedule the background task
+    # Agenda execução em background
     background_tasks.add_task(process_campaign_task, client, request_data)
     return {"status": "processing"}
