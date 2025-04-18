@@ -107,20 +107,22 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         camp_op = client.get_type("CampaignOperation")
         campaign = camp_op.create
         campaign.name = data.campaign_name
+
         # definir tipo de canal
         if data.campaign_type.upper() == "DISPLAY":
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
         else:
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
+
         campaign.status = client.enums.CampaignStatusEnum.PAUSED
         campaign.campaign_budget = budget_resource
-        # Manual CPC sem CopyFrom
-        manual_cpc = client.get_type("ManualCpc")()
-        manual_cpc.enhanced_cpc_enabled = True
-        campaign.manual_cpc = manual_cpc
+
+        # Manual CPC: apenas habilita o enhanced CPC diretamente
+        campaign.manual_cpc.enhanced_cpc_enabled = True
+
         # Datas
         campaign.start_date = format_date(data.start_date)
-        campaign.end_date = format_date(data.end_date)
+        campaign.end_date   = format_date(data.end_date)
 
         resp_camp = campaign_service.mutate_campaigns(
             customer_id=customer_id,
@@ -128,7 +130,6 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         )
         campaign_resource = resp_camp.results[0].resource_name
         logger.info(f"Campanha criada: {campaign_resource}")
-
         logger.info(">> Fim da criação de campanha.")
     except Exception:
         logger.exception("‼️ Erro dentro de process_campaign_task")
@@ -144,15 +145,15 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
 
     # Tokens fictícios (só para teste; em produção use env vars ou BaseSettings)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
-    CID = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
-    CSECRET = "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"
+    CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
+    CSECRET   = "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"
 
     cfg = {
         "developer_token": DEV_TOKEN,
-        "client_id": CID,
-        "client_secret": CSECRET,
-        "refresh_token": request_data.refresh_token,
-        "use_proto_plus": True,
+        "client_id":       CID,
+        "client_secret":   CSECRET,
+        "refresh_token":   request_data.refresh_token,
+        "use_proto_plus":  True,
     }
     logger.debug("GoogleAdsClient config:\n%s", json.dumps(cfg, indent=2))
 
@@ -173,9 +174,9 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Erro ao obter login_customer_id")
         raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id do Google Ads")
 
-    # Durante desenvolvimento você pode chamar direto:
+    # Durante desenvolvimento você pode chamar direto pra debugar:
     # process_campaign_task(client, request_data)
-    # Em homologação/produção, use background:
+    # Em produção, deixe em background:
     background_tasks.add_task(process_campaign_task, client, request_data)
 
     return {"status": "processing"}
