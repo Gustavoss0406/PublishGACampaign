@@ -33,10 +33,15 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # remove semicolons após strings e antes de vírgulas/fechamentos
-    text = re.sub(r'"\s*;+', '"', text)
+    # 1) remove semicolons imediatamente após fechamento de string e antes de vírgula
+    text = re.sub(r'"\s*;+\s*,', '",', text)
+    # 2) remove semicolons após fechamento de string e antes de } ou ]
+    text = re.sub(r'"\s*;+\s*(?=[}\]])', '"', text)
+    # 3) remove qualquer ';' antes de vírgula
     text = re.sub(r';\s*,', ',', text)
+    # 4) remove qualquer ';' antes de fechamento de objeto/array
     text = re.sub(r';\s*(?=[}\]])', '', text)
+    # 5) remove vírgula final antes de '}' ou ']'
     text = re.sub(r',\s*(?=[}\]])', '', text)
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
@@ -111,8 +116,8 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
             # Smart Bidding: maximize conversions
-            max_conv = client.get_type("MaximizeConversions")  # already a message instance
-            camp.maximize_conversions.CopyFrom(max_conv)
+            maximize_conversions = client.get_type("MaximizeConversions")  # already message instance
+            camp.maximize_conversions.CopyFrom(maximize_conversions)
         else:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
             camp.manual_cpc.enhanced_cpc_enabled = True
