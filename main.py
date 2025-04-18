@@ -4,13 +4,13 @@ import uuid
 import re
 import json
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 from pydantic import BaseModel, field_validator, ConfigDict
 
-# ─── Logging ────────────────────────────────────────────────────────────────────
+# ─── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -18,8 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── App & CORS ─────────────────────────────────────────────────────────────────
+# ─── FastAPI app & CORS ─────────────────────────────────────────────────────────
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,6 +28,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Middleware de pré‑processamento ────────────────────────────────────────────
+@app.middleware("http")
+async def preprocess_request(request: Request, call_next):
+    # 1) lê o raw body
+    body = await request.body()
+    text = body.decode("utf-8", errors="ignore")
+    logger.debug(f"Raw request body (pre-clean):\n{text}")
+
+    # 2) remove ';' antes de vírgulas
+    text = re.sub(r';\s*,', ',', text)
+    # 3) remove ';' antes de fechamento de objeto ou array
+    text = re.sub(r';\s*(?=[}\]])', '', text)
+    logger.debug(f"Cleaned request body (post-clean):\n{text}")
+
+    # 4) injeta de volta no request
+    async def receive():
+        return {"type": "http.request", "body": text.encode("utf-8")}
+    request._receive = receive
+
+    # 5) prossegue com o fluxo normal
+    return await call_next(request)
 
 # ─── Modelo Pydantic ────────────────────────────────────────────────────────────
 class CampaignRequest(BaseModel):
@@ -88,20 +111,16 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         op = client.get_type("CampaignOperation")
         camp = op.create
         camp.name = data.campaign_name
-        if data.campaign_type.upper() == "DISPLAY":
+        is_display = data.campaign_type.upper() == "DISPLAY"
+        if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
+            camp.bidding_strategy_type = client.enums.BiddingStrategyTypeEnum.MAXIMIZE_CLICKS
         else:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
+            camp.manual_cpc.enhanced_cpc_enabled = True
 
         camp.status = client.enums.CampaignStatusEnum.PAUSED
         camp.campaign_budget = budget_resource
-
-        # Bidding
-        if data.campaign_type.upper() != "DISPLAY":
-            camp.manual_cpc.enhanced_cpc_enabled = True
-        else:
-            camp.bidding_strategy_type = client.enums.BiddingStrategyTypeEnum.MAXIMIZE_CLICKS
-
         camp.start_date = format_date(data.start_date)
         camp.end_date   = format_date(data.end_date)
 
@@ -116,11 +135,10 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
 # ─── Endpoint principal ─────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
-    # 1) Validações básicas
     if not request_data.final_url:
         raise HTTPException(400, "Campo final_url é obrigatório")
 
-    # 2) Tokens (fictícios; em prod use env vars / BaseSettings)
+    # Tokens fictícios (em produção, use env vars ou BaseSettings)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
     CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
     CSECRET   = "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"
@@ -133,16 +151,16 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         "use_proto_plus":  True,
     }
 
-    # 3) Inicializa client e pega login_customer_id
+    # Init client e CID
     try:
         client = GoogleAdsClient.load_from_dict(cfg)
         login_cid = get_customer_id(client)
         client.login_customer_id = login_cid
-    except Exception as e:
-        logger.exception("Falha ao inicializar GoogleAdsClient ou obter CID")
+    except Exception:
+        logger.exception("Falha na autenticação Google Ads")
         raise HTTPException(400, "Erro de autenticação no Google Ads")
 
-    # 4) Cria o budget **sincronamente**, para capturar o erro "Too low" imediatamente
+    # Cria o budget SÍNCRONO para capturar “Too low”
     budget_service = client.get_service("CampaignBudgetService")
     budget_op = client.get_type("CampaignBudgetOperation")
     budget = budget_op.create
@@ -156,20 +174,15 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
             operations=[budget_op],
         )
     except GoogleAdsException as ex:
-        # procura mensagem “Too low” e devolve 400 ao client
         for err in ex.failure.errors:
             if "Too low" in err.message:
-                raise HTTPException(
-                    400,
-                    "Orçamento diário muito baixo para este cliente. Aumente o valor mínimo exigido pelo Google Ads."
-                )
-        # qualquer outro erro, repropaga
+                raise HTTPException(400, "Orçamento diário muito baixo. Aumente o valor.")
         logger.exception("Erro inesperado ao criar budget")
         raise HTTPException(500, "Erro ao criar orçamento no Google Ads")
 
     budget_res = resp_budget.results[0].resource_name
     logger.info(f"Budget criado: {budget_res}")
 
-    # 5) Agenda a criação da campanha de fato em background
+    # Agenda criação da campanha
     background_tasks.add_task(create_campaign_bg, client, request_data, budget_res)
     return {"status": "processing"}
