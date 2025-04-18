@@ -22,10 +22,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 # ─── Middleware de pré‑processamento ────────────────────────────────────────────
@@ -35,17 +33,22 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # Remove semicolons immediately before comma, '}', or ']'
-    text = re.sub(r';+(?=\s*[,}\]])', '', text)
-    # Also remove any trailing commas before '}' or ']'
-    text = re.sub(r',+(?=\s*[}\]])', '', text)
+    # 1) Remove qualquer ';' logo após fechamento de string antes de vírgula
+    text = re.sub(r'";+\s*,', '",', text)
+    # 2) Remove qualquer ';' logo após fechamento de string antes de } ou ]
+    text = re.sub(r'";+\s*(?=[}\]])', '"', text)
+    # 3) Remove ';' antes de vírgulas isoladas
+    text = re.sub(r';\s*,', ',', text)
+    # 4) Remove ';' antes de fechamento de objeto/array
+    text = re.sub(r';\s*(?=[}\]])', '', text)
+    # 5) Remove vírgulas finais antes de } ou ]
+    text = re.sub(r',\s*(?=[}\]])', '', text)
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
 
     async def receive():
         return {"type": "http.request", "body": text.encode("utf-8")}
     request._receive = receive
-
     return await call_next(request)
 
 # ─── Pydantic model ─────────────────────────────────────────────────────────────
@@ -98,7 +101,7 @@ def get_customer_id(client: GoogleAdsClient) -> str:
         raise Exception("Nenhum customer acessível")
     return res.resource_names[0].split("/")[-1]
 
-# ─── Background task: cria só a campanha (budget já existe) ────────────────────
+# ─── Background task: criar apenas a campanha (budget já existe) ────────────────
 def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_res: str):
     try:
         logger.info(">> [BG] Criando campanha no Google Ads")
@@ -112,7 +115,7 @@ def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_re
         if is_display:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
             # Smart Bidding: maximize conversions
-            max_conv = client.get_type("MaximizeConversions")  # already a message instance
+            max_conv = client.get_type("MaximizeConversions")  # já é instância
             camp.maximize_conversions.CopyFrom(max_conv)
         else:
             camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
@@ -147,7 +150,6 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         "use_proto_plus":  True,
     }
 
-    # Inicializa client e obtém login_customer_id
     try:
         client = GoogleAdsClient.load_from_dict(cfg)
         login_cid = get_customer_id(client)
@@ -156,7 +158,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Falha na autenticação Google Ads")
         raise HTTPException(400, "Erro de autenticação no Google Ads")
 
-    # Cria budget síncrono para capturar “Too low”
+    # Cria orçamento SÍNCRONO para capturar “Too low”
     budget_svc = client.get_service("CampaignBudgetService")
     budget_op = client.get_type("CampaignBudgetOperation")
     budget = budget_op.create
