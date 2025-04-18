@@ -107,7 +107,6 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         campaign = camp_op.create
         campaign.name = data.campaign_name
 
-        # definir tipo de canal
         is_display = data.campaign_type.upper() == "DISPLAY"
         if is_display:
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
@@ -117,13 +116,11 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         campaign.status = client.enums.CampaignStatusEnum.PAUSED
         campaign.campaign_budget = budget_resource
 
-        # Bidding
+        # Bidding strategy
         if not is_display:
-            # Manual CPC só para SEARCH
             campaign.manual_cpc.enhanced_cpc_enabled = True
         else:
-            # Para DISPLAY, por exemplo, maximize clicks
-            campaign.maximize_clicks.CopyFrom(client.get_type("MaximizeClicks")())
+            campaign.bidding_strategy_type = client.enums.BiddingStrategyTypeEnum.MAXIMIZE_CLICKS
 
         # Datas
         campaign.start_date = format_date(data.start_date)
@@ -179,9 +176,8 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Erro ao obter login_customer_id")
         raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id do Google Ads")
 
-    # Em produção, mantém em background:
     background_tasks.add_task(process_campaign_task, client, request_data)
-    # Para debug imediato, você pode chamar synchronously:
+    # Para debug, chame diretamente:
     # process_campaign_task(client, request_data)
 
     return {"status": "processing"}
