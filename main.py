@@ -57,14 +57,14 @@ class CampaignRequest(BaseModel):
     @field_validator("budget", mode="before")
     def convert_budget(cls, v):
         if isinstance(v, str):
-            return int(float(v.replace("$","").strip()))
+            return int(float(v.replace("$", "").strip()))
         return v
 
-    @field_validator("audience_min_age","audience_max_age", mode="before")
+    @field_validator("audience_min_age", "audience_max_age", mode="before")
     def convert_age(cls, v):
         return int(v)
 
-    @field_validator("cover_photo","final_url", mode="before")
+    @field_validator("cover_photo", "final_url", mode="before")
     def clean_urls(cls, v):
         v = v.strip().rstrip(" ;")
         if v.lower() == "null" or not v:
@@ -107,15 +107,20 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         camp_op = client.get_type("CampaignOperation")
         campaign = camp_op.create
         campaign.name = data.campaign_name
+        # definir tipo de canal
         if data.campaign_type.upper() == "DISPLAY":
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
         else:
             campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
         campaign.status = client.enums.CampaignStatusEnum.PAUSED
         campaign.campaign_budget = budget_resource
-        campaign.manual_cpc.CopyFrom(client.get_type("ManualCpc")())
+        # Manual CPC sem CopyFrom
+        manual_cpc = client.get_type("ManualCpc")()
+        manual_cpc.enhanced_cpc_enabled = True
+        campaign.manual_cpc = manual_cpc
+        # Datas
         campaign.start_date = format_date(data.start_date)
-        campaign.end_date   = format_date(data.end_date)
+        campaign.end_date = format_date(data.end_date)
 
         resp_camp = campaign_service.mutate_campaigns(
             customer_id=customer_id,
@@ -134,20 +139,20 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     logger.debug("Parsed request data:\n%s", json.dumps(request_data.model_dump(), indent=2))
 
     if not request_data.final_url:
-        logger.error("Validation error: final_url é empty")
+        logger.error("Validation error: final_url é obrigatório")
         raise HTTPException(status_code=400, detail="Campo final_url é obrigatório")
 
-    # Tokens fictícios (só para teste; em prod use env vars ou BaseSettings)
+    # Tokens fictícios (só para teste; em produção use env vars ou BaseSettings)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
-    CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
-    CSECRET   = "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"
+    CID = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
+    CSECRET = "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"
 
     cfg = {
         "developer_token": DEV_TOKEN,
-        "client_id":       CID,
-        "client_secret":   CSECRET,
-        "refresh_token":   request_data.refresh_token,
-        "use_proto_plus":  True,
+        "client_id": CID,
+        "client_secret": CSECRET,
+        "refresh_token": request_data.refresh_token,
+        "use_proto_plus": True,
     }
     logger.debug("GoogleAdsClient config:\n%s", json.dumps(cfg, indent=2))
 
@@ -168,8 +173,9 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.exception("Erro ao obter login_customer_id")
         raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id do Google Ads")
 
-    # Para DEBUG: chame direto (comente essa linha, descomente a próxima)
-    background_tasks.add_task(process_campaign_task, client, request_data)
+    # Durante desenvolvimento você pode chamar direto:
     # process_campaign_task(client, request_data)
+    # Em homologação/produção, use background:
+    background_tasks.add_task(process_campaign_task, client, request_data)
 
     return {"status": "processing"}
