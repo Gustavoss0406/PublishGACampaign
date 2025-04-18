@@ -2,7 +2,6 @@ import logging
 import sys
 import uuid
 import re
-import json
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,8 +21,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ─── Middleware de pré‑processamento ────────────────────────────────────────────
@@ -33,11 +34,11 @@ async def preprocess_request(request: Request, call_next):
     text = raw.decode("utf-8", errors="ignore")
     logger.debug(f"Raw request body (pre-clean):\n{text}")
 
-    # 1) Remove semicolons right after a closing quote before , } or ]
-    text = re.sub(r'"\s*;\s*(?=[,}\]])', '"', text)
-    # 2) Remove any semicolons immediately before , } or ]
+    # 0) Remove o ';' que vier dentro das aspas antes de vírgula ou fechamento
+    text = re.sub(r'";\s*(?=[,}\]])', '",', text)
+    # 1) Remove qualquer ';' imediatamente antes de vírgula, chave ou colchete
     text = re.sub(r';+(?=\s*[,}\]])', '', text)
-    # 3) Remove any trailing commas before } or ]
+    # 2) Remove vírgulas finais antes de '}' ou ']'
     text = re.sub(r',+(?=\s*[}\]])', '', text)
 
     logger.debug(f"Cleaned request body (post-clean):\n{text}")
@@ -133,7 +134,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     if not request_data.final_url:
         raise HTTPException(400, "Campo final_url é obrigatório")
 
-    # Tokens fictícios (em produção, use env vars ou BaseSettings)
+    # Tokens fictícios (em produção, use env vars/BaseSettings)
     DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
     CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
     CSECRET   = "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"
@@ -177,6 +178,5 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     budget_res = resp_budget.results[0].resource_name
     logger.info(f"Budget criado: {budget_res}")
 
-    # Agenda criação da campanha em background
     background_tasks.add_task(create_campaign_bg, client, request_data, budget_res)
     return {"status": "processing"}
