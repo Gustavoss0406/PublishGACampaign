@@ -135,10 +135,11 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         logger.error("Validation error: final_url is empty")
         raise HTTPException(status_code=400, detail="Campo final_url é obrigatório")
 
-    # 2) Validate env vars for Google Ads
-    DEV_TOKEN = os.getenv("D4yv61IQ8R0JaE5dxrd1Uw")
-    CID       = os.getenv("167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com")
-    CSECRET   = os.getenv("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")
+    # 2) Assign fictitious tokens diretamente
+    DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
+    CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
+    CSECRET   = "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"
+
     missing = [name for name,val in [
         ("GOOGLE_ADS_DEVELOPER_TOKEN", DEV_TOKEN),
         ("GOOGLE_ADS_CLIENT_ID",       CID),
@@ -146,7 +147,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
     ] if not val]
     if missing:
         logger.error("Missing env vars: %s", missing)
-        raise HTTPException(status_code=500, detail=f"Faltando env vars: {', '.join(missing)}")
+        raise HTTPException(status_code=500, detail=f"Faltando vars: {', '.join([n for n,_ in missing])}")
 
     # 3) Build GoogleAdsClient config
     cfg = {
@@ -160,7 +161,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
 
     try:
         client = GoogleAdsClient.load_from_dict(cfg)
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to initialize GoogleAdsClient")
         raise HTTPException(
             status_code=400,
@@ -172,7 +173,7 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
         login_cid = get_customer_id(client)
         client.login_customer_id = login_cid
         logger.info("Using login_customer_id = %s", login_cid)
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to get login_customer_id")
         raise HTTPException(status_code=400, detail="Erro ao obter login_customer_id do Google Ads")
 
