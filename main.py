@@ -1,182 +1,185 @@
-import logging
-import sys
-import uuid
-import re
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator, ConfigDict
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel, validator, constr
+from typing import Optional
+from datetime import datetime, date
+import re, json, urllib.parse
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
-# ─── Logging setup ─────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG,
-    stream=sys.stdout,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-# ─── FastAPI app & CORS ─────────────────────────────────────────────────────────
 app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# ─── Middleware de pré‑processamento ────────────────────────────────────────────
-@app.middleware("http")
-async def preprocess_request(request: Request, call_next):
-    raw = await request.body()
-    text = raw.decode("utf-8", errors="ignore")
-    logger.debug(f"Raw request body (pre-clean):\n{text}")
+# Middleware para limpar JSON malformatado
+class JSONCleanupMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.headers.get("content-type", "").startswith("application/json"):
+            raw_body = await request.body()
+            if raw_body:
+                text = raw_body.decode("utf-8", errors="ignore")
+                # Correções simples de formatação:
+                text = text.replace(";,", ",")            # corrige ";," -> ","
+                text = re.sub(r",\s*,", ",", text)        # remove vírgulas duplicadas
+                text = re.sub(r",\s*([\]\}])", r"\1", text)  # remove vírgula antes de ']' ou '}' 
+                # Remover chaves duplicadas simples (mantém a última ocorrência):
+                # (Conversão para dict e volta para JSON para eliminar duplicatas)
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    # JSON ainda inválido após limpeza
+                    return JSONResponse(
+                        {"detail": "JSON mal formatado"}, status_code=422
+                    )
+                # Se conseguiu carregar, re-dump para string para garantir formatação JSON válida
+                text = json.dumps(data)
+                # Substituir o corpo da request pelo JSON limpo
+                async def receive() -> dict:
+                    return {"type": "http.request", "body": text.encode("utf-8"), "more_body": False}
+                request._receive = receive  # injeta nova função de leitura do corpo
+        # Chama a próxima etapa (rota ou próximo middleware)
+        response = await call_next(request)
+        return response
 
-    # 0) Remove o ';' que vier dentro das aspas antes de vírgula ou fechamento
-    text = re.sub(r'";(?=[,}\]])', '",', text)
-    # 1) Remove qualquer ';' imediatamente antes de vírgula, chave ou colchete
-    text = re.sub(r';+(?=\s*[,}\]])', '', text)
-    # 2) Remove vírgulas finais antes de '}' ou ']'
-    text = re.sub(r',+(?=\s*[}\]])', '', text)
+app.add_middleware(JSONCleanupMiddleware)
 
-    logger.debug(f"Cleaned request body (post-clean):\n{text}")
+# Modelo Pydantic para o payload da campanha
+class CampaignPayload(BaseModel):
+    name: str
+    objective: constr(strip_whitespace=True, min_length=1)  # será validado pelo código (lista de válidos)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    budget: constr(regex=r'^\$\d+(\.\d{1,2})?$')  # ex: "$32.50"
+    cover_photo: Optional[str] = None
+    final_url: Optional[str] = None
 
-    async def receive():
-        return {"type": "http.request", "body": text.encode("utf-8")}
-    request._receive = receive
+    # Validar formato das datas (MM/DD/YYYY)
+    @validator("start_date", "end_date", pre=True)
+    def validate_date(cls, value):
+        if value is None:
+            return value
+        try:
+            # Tenta converter a string para date no formato MM/DD/YYYY
+            dt = datetime.strptime(value, "%m/%d/%Y")
+            return dt.date()  # converte para date
+        except Exception:
+            raise ValueError("Data deve estar no formato MM/DD/YYYY")
+    
+    # Validar URLs (com ou sem protocolo)
+    @validator("cover_photo", "final_url")
+    def validate_url(cls, url):
+        if url is None:
+            return url
+        # Se não começa com http:// ou https://, adiciona http:// temporariamente para validar
+        test_url = url
+        if not re.match(r'^[a-zA-Z]+://', url):
+            test_url = "http://" + url
+        try:
+            parsed = urllib.parse.urlparse(test_url)
+            # Verifica se possui ao menos domínio e esquema (no caso adicionado ou existente)
+            if not parsed.netloc or not parsed.scheme:
+                raise ValueError
+        except Exception:
+            raise ValueError("URL inválida")
+        return url
 
-    return await call_next(request)
+# Credenciais fictícias para Google Ads API
+google_ads_config = {
+    "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
+    "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
+    "client_secret": "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",
+    "refresh_token": "TEST_REFRESH_TOKEN",
+    "use_proto_plus": True
+}
+# Inicializa cliente Google Ads fora da rota para reutilizar
+google_ads_client = GoogleAdsClient.load_from_dict(google_ads_config, version="v16")
 
-# ─── Pydantic model ─────────────────────────────────────────────────────────────
-class CampaignRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    refresh_token: str
-    campaign_name: str
-    campaign_description: str
-    objective: str
-    cover_photo: str
-    final_url: str
-    keyword1: str
-    keyword2: str
-    keyword3: str
-    budget: int
-    start_date: str
-    end_date: str
-    price_model: str
-    campaign_type: str
-    audience_gender: str
-    audience_min_age: int
-    audience_max_age: int
-    devices: list[str]
-
-    @field_validator("budget", mode="before")
-    def convert_budget(cls, v):
-        return int(float(v.replace("$", ""))) if isinstance(v, str) else v
-
-    @field_validator("audience_min_age", "audience_max_age", mode="before")
-    def convert_age(cls, v):
-        return int(v)
-
-    @field_validator("cover_photo", "final_url", mode="before")
-    def clean_urls(cls, v):
-        v = v.strip().rstrip(" ;")
-        if not v or v.lower() == "null":
-            return ""
-        if not re.match(r"^https?://", v):
-            v = "http://" + v
-        return v
-
-# ─── Helpers Google Ads ──────────────────────────────────────────────────────────
-def format_date(date_str: str) -> str:
-    return datetime.strptime(date_str, "%m/%d/%Y").strftime("%Y%m%d")
-
-def get_customer_id(client: GoogleAdsClient) -> str:
-    svc = client.get_service("CustomerService")
-    res = svc.list_accessible_customers()
-    if not res.resource_names:
-        raise Exception("Nenhum customer acessível")
-    return res.resource_names[0].split("/")[-1]
-
-# ─── Background task: cria só a campanha (budget já existe) ────────────────────
-def create_campaign_bg(client: GoogleAdsClient, data: CampaignRequest, budget_res: str):
+# Função de criação de campanha (executada em background)
+def create_campaign_task(payload: CampaignPayload):
+    customer_id = "1234567890"  # ID do cliente Google Ads (fictício)
     try:
-        logger.info(">> [BG] Criando campanha no Google Ads")
-        cid = client.login_customer_id
-        svc = client.get_service("CampaignService")
-        op = client.get_type("CampaignOperation")
-        camp = op.create
-        camp.name = data.campaign_name
-
-        is_display = data.campaign_type.upper() == "DISPLAY"
-        if is_display:
-            camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
-            max_conv = client.get_type("MaximizeConversions")
-            camp.maximize_conversions.CopyFrom(max_conv)
-        else:
-            camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
-            camp.manual_cpc.enhanced_cpc_enabled = True
-
-        camp.status = client.enums.CampaignStatusEnum.PAUSED
-        camp.campaign_budget = budget_res
-        camp.start_date = format_date(data.start_date)
-        camp.end_date   = format_date(data.end_date)
-
-        resp = svc.mutate_campaigns(customer_id=cid, operations=[op])
-        logger.info(f"[BG] Campanha criada: {resp.results[0].resource_name}")
-    except Exception:
-        logger.exception("‼️ [BG] Erro dentro de create_campaign_bg")
-
-# ─── Endpoint principal ─────────────────────────────────────────────────────────
-@app.post("/create_campaign")
-async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
-    if not request_data.final_url:
-        raise HTTPException(400, "Campo final_url é obrigatório")
-
-    # Tokens fictícios (em produção, use env vars/BaseSettings)
-    DEV_TOKEN = "D4yv61IQ8R0JaE5dxrd1Uw"
-    CID       = "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com"
-    CSECRET   = "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"
-
-    cfg = {
-        "developer_token": DEV_TOKEN,
-        "client_id":       CID,
-        "client_secret":   CSECRET,
-        "refresh_token":   request_data.refresh_token,
-        "use_proto_plus":  True,
-    }
-
-    try:
-        client = GoogleAdsClient.load_from_dict(cfg)
-        login_cid = get_customer_id(client)
-        client.login_customer_id = login_cid
-    except Exception:
-        logger.exception("Falha na autenticação Google Ads")
-        raise HTTPException(400, "Erro de autenticação no Google Ads")
-
-    # Cria orçamento síncrono para capturar “Too low”
-    budget_svc = client.get_service("CampaignBudgetService")
-    budget_op = client.get_type("CampaignBudgetOperation")
-    budget = budget_op.create
-    budget.name = f"{request_data.campaign_name} Budget {uuid.uuid4()}"
-    budget.amount_micros = request_data.budget * 1_000_000
-    budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
-
-    try:
-        resp_budget = budget_svc.mutate_campaign_budgets(
-            customer_id=client.login_customer_id,
-            operations=[budget_op],
+        # 1. Criação do orçamento da campanha
+        campaign_budget_service = google_ads_client.get_service("CampaignBudgetService")
+        budget_op = google_ads_client.get_type("CampaignBudgetOperation")
+        campaign_budget = budget_op.create
+        campaign_budget.name = f"Budget {payload.name}"
+        campaign_budget.delivery_method = google_ads_client.enums.BudgetDeliveryMethodEnum.STANDARD
+        # Converte budget string "$X.YZ" para micros (int)
+        budget_value = float(payload.budget.replace("$", ""))
+        campaign_budget.amount_micros = int(budget_value * 1_000_000)
+        # Executa a chamada para criar o budget
+        budget_response = campaign_budget_service.mutate_campaign_budgets(
+            customer_id=customer_id, operations=[budget_op]
         )
-    except GoogleAdsException as ex:
-        for err in ex.failure.errors:
-            if "Too low" in err.message:
-                raise HTTPException(400, "Orçamento diário muito baixo. Aumente o valor.")
-        logger.exception("Erro inesperado ao criar budget")
-        raise HTTPException(500, "Erro ao criar orçamento no Google Ads")
+        budget_resource = budget_response.results[0].resource_name
 
-    budget_res = resp_budget.results[0].resource_name
-    logger.info(f"Budget criado: {budget_res}")
+        # 2. Criação da campanha
+        campaign_service = google_ads_client.get_service("CampaignService")
+        campaign_op = google_ads_client.get_type("CampaignOperation")
+        campaign = campaign_op.create
+        campaign.name = payload.name
+        campaign.advertising_channel_type = google_ads_client.enums.AdvertisingChannelTypeEnum.SEARCH
+        campaign.status = google_ads_client.enums.CampaignStatusEnum.PAUSED
+        # Associa o orçamento criado
+        campaign.campaign_budget = budget_resource  # linka a campanha ao orçamento
+        # Define datas de início e término, se fornecidas
+        if isinstance(payload.start_date, date):
+            # Formata para YYYY-MM-DD conforme exigido pela API
+            campaign.start_date = payload.start_date.strftime("%Y-%m-%d")
+        if isinstance(payload.end_date, date):
+            campaign.end_date = payload.end_date.strftime("%Y-%m-%d")
+        # 3. Estratégia de lance automática baseada no objetivo
+        objective = payload.objective.lower()  # usar lower-case para comparar
+        try:
+            if objective in ["vendas", "leads", "promover site/app"]:
+                # Maximize Clicks via TargetSpend
+                campaign.target_spend = google_ads_client.get_type("TargetSpend")()
+                # (Opcional: definir teto de CPC, ex: $5.00)
+                # campaign.target_spend.cpc_bid_ceiling_micros = 5 * 1_000_000
+            elif objective == "alcance de marca":
+                tis = google_ads_client.get_type("TargetImpressionShare")()
+                # Alvo: qualquer lugar na página, 100% das impressões (se possível)
+                tis.location = google_ads_client.enums.TargetImpressionShareLocationEnum.ANYWHERE_ON_PAGE
+                tis.location_fraction_micros = 1_000_000  # 100% das impressões
+                # Opcional: definir CPC máximo, ex: $2.00
+                # tis.cpc_bid_ceiling_micros = 2 * 1_000_000
+                campaign.target_impression_share = tis
+            else:
+                # Objetivo não reconhecido (fallback de segurança)
+                raise ValueError("Objetivo inválido")
+        except Exception as e:
+            # Se objetivo inválido foi detectado
+            print(f"Erro: {e}")
+            return  # aborta antes de criar campanha
+        # 4. Chama API para criar a campanha
+        campaign_response = campaign_service.mutate_campaigns(
+            customer_id=customer_id, operations=[campaign_op]
+        )
+        new_campaign_id = campaign_response.results[0].resource_name
+        print(f"Campanha criada: {new_campaign_id}")
+    except GoogleAdsException as gae:
+        # Lida com erros da API Google Ads (ex.: token inválido, orçamento baixo, etc.)
+        error_msgs = [err.message for err in gae.failure.errors]
+        for msg in error_msgs:
+            if "AuthenticationError" in msg or "AuthorizationError" in msg:
+                # Possível token inválido
+                print("Erro: refresh_token inválido ou credenciais de API incorretas.")
+            elif "budget" in msg and "too low" in msg.lower():
+                print("Erro: orçamento muito baixo para criar a campanha.")
+            else:
+                print(f"Erro na criação da campanha: {msg}")
+    except Exception as e:
+        # Qualquer outro erro não previsto
+        print(f"Erro inesperado: {e}")
 
-    background_tasks.add_task(create_campaign_bg, client, request_data, budget_res)
-    return {"status": "processing"}
+@app.post("/create_campaign")
+async def create_campaign_endpoint(payload: CampaignPayload, background_tasks: BackgroundTasks):
+    # Regras de negócio antes de agendar a tarefa:
+    # Verifica orçamento mínimo (exemplo: >= $1.00)
+    numeric_budget = float(payload.budget.replace("$", ""))
+    if numeric_budget < 1.0:
+        # Retorna 422 com mensagem clara
+        raise HTTPException(status_code=422, detail="Budget muito baixo. Valor mínimo é $1.00.")
+    # (A validação de objetivo inválido já é coberta pelo Pydantic/enum no modelo ou pela lógica no background_task)
+    # Agenda a task de criação de campanha em segundo plano
+    background_tasks.add_task(create_campaign_task, payload)
+    return {"message": "Processamento da criação da campanha iniciado em background."}
