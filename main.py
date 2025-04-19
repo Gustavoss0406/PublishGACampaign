@@ -30,6 +30,10 @@ logging.getLogger("PIL").setLevel(logging.INFO)
 # ——— FastAPI setup ———
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Verifica se o ffmpeg está disponível no PATH
+    if not shutil.which("ffmpeg"):
+        logging.critical("FFmpeg não encontrado no PATH. Encerrando.")
+        raise RuntimeError("FFmpeg não está instalado no servidor")
     logging.info("Startup: aplicação iniciada.")
     yield
     logging.info("Shutdown: aplicação encerrada.")
@@ -37,7 +41,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # em produção, restrinja
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,14 +95,20 @@ def process_square_image(data: bytes) -> bytes:
 def extract_video_thumbnail(data: bytes, size=(1200,628)) -> bytes:
     vid = f"/tmp/{uuid.uuid4().hex}.mp4"
     thumb = f"/tmp/{uuid.uuid4().hex}.png"
-    with open(vid, "wb") as f: f.write(data)
+    with open(vid, "wb") as f:
+        f.write(data)
     try:
-        subprocess.run([
-            "ffmpeg", "-y", "-i", vid,
-            "-vf", f"select=eq(n\\,0),scale={size[0]}:{size[1]}",
-            "-frames:v", "1", thumb
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        with open(thumb, "rb") as f: img = f.read()
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", vid,
+             "-vf", f"select=eq(n\\,0),scale={size[0]}:{size[1]}",
+             "-frames:v", "1", thumb],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+        )
+        with open(thumb, "rb") as f:
+            img = f.read()
+    except FileNotFoundError:
+        logging.error("FFmpeg não encontrado no PATH.")
+        raise HTTPException(500, "FFmpeg não está instalado no servidor")
     except subprocess.CalledProcessError as e:
         logging.error(e.stderr.decode(errors="ignore"))
         raise HTTPException(500, "Falha ao extrair thumbnail de vídeo")
@@ -110,17 +120,14 @@ def extract_video_thumbnail(data: bytes, size=(1200,628)) -> bytes:
 # ——— Helpers de asset upload ———
 def is_video_url(url: str) -> bool:
     path = urlparse(url).path.lower()
-    return any(path.endswith(ext) for ext in (".mp4", ".mov"))
+    return path.endswith((".mp4", ".mov"))
 
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, url: str, process: bool=False) -> str:
     resp = requests.get(url)
     if resp.status_code != 200:
         raise HTTPException(400, f"Download falhou ({resp.status_code})")
     raw = resp.content
-    if is_video_url(url):
-        img = extract_video_thumbnail(raw, (1200, 628))
-    else:
-        img = process_cover_photo(raw) if process else raw
+    img = extract_video_thumbnail(raw, (1200, 628)) if is_video_url(url) else (process_cover_photo(raw) if process else raw)
     svc = client.get_service("AssetService")
     op  = client.get_type("AssetOperation")
     a   = op.create
@@ -135,10 +142,7 @@ def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, url: st
     if resp.status_code != 200:
         raise HTTPException(400, f"Download falhou ({resp.status_code})")
     raw = resp.content
-    if is_video_url(url):
-        img = extract_video_thumbnail(raw, (1200, 1200))
-    else:
-        img = process_square_image(raw)
+    img = extract_video_thumbnail(raw, (1200, 1200)) if is_video_url(url) else process_square_image(raw)
     svc = client.get_service("AssetService")
     op  = client.get_type("AssetOperation")
     a   = op.create
@@ -233,11 +237,11 @@ def create_campaign_resource(client: GoogleAdsClient, cid: str, budget_res: str,
         if data.campaign_type.upper()=="DISPLAY"
         else client.enums.AdvertisingChannelTypeEnum.SEARCH
     )
-    c.status         = client.enums.CampaignStatusEnum.ENABLED
-    c.campaign_budget= budget_res
-    c.start_date     = format_date(data.start_date)
-    c.end_date       = format_date(data.end_date)
-    c.manual_cpc     = client.get_type("ManualCpc")
+    c.status          = client.enums.CampaignStatusEnum.ENABLED
+    c.campaign_budget = budget_res
+    c.start_date      = format_date(data.start_date)
+    c.end_date        = format_date(data.end_date)
+    c.manual_cpc      = client.get_type("ManualCpc")
     resp = svc.mutate_campaigns(customer_id=cid, operations=[op])
     return resp.results[0].resource_name
 
@@ -288,11 +292,8 @@ def create_responsive_display_ad(client: GoogleAdsClient, cid: str, ag_res: str,
     ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
     if not data.cover_photo:
         raise HTTPException(400, "cover_photo não fornecida")
-    if data.cover_photo.startswith("http"):
-        main_res   = upload_image_asset(client, cid, data.cover_photo, process=True)
-        square_res = upload_square_image_asset(client, cid, data.cover_photo)
-    else:
-        main_res = square_res = data.cover_photo
+    main_res   = upload_image_asset(client, cid, data.cover_photo, process=True)
+    square_res = upload_square_image_asset(client, cid, data.cover_photo)
     img1 = client.get_type("AdImageAsset"); img1.asset = main_res
     img2 = client.get_type("AdImageAsset"); img2.asset = square_res
     ad.responsive_display_ad.marketing_images.append(img1)
@@ -363,7 +364,7 @@ async def health_check():
     return JSONResponse({"status": "ok"}, status_code=200)
 
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn, shutil
     port = int(os.environ.get("PORT", 8000))
     logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
