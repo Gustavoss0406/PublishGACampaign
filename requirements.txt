@@ -5,3 +5,4 @@ pydantic>=2.0
 requests
 Pillow
 pyyaml==6.0.2
+moviepy
