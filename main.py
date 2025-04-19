@@ -3,6 +3,7 @@ import sys
 import uuid
 import os
 import re
+import shutil
 import subprocess
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -30,9 +31,9 @@ logging.getLogger("PIL").setLevel(logging.INFO)
 # ——— FastAPI setup ———
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Verifica se o ffmpeg está disponível no PATH
+    # check for ffmpeg binary
     if not shutil.which("ffmpeg"):
-        logging.critical("FFmpeg não encontrado no PATH. Encerrando.")
+        logging.critical("FFmpeg não encontrado no PATH. Encerrando aplicação.")
         raise RuntimeError("FFmpeg não está instalado no servidor")
     logging.info("Startup: aplicação iniciada.")
     yield
@@ -75,24 +76,29 @@ def process_cover_photo(data: bytes) -> bytes:
     target = 1.91
     ratio = w / h
     if ratio > target:
-        new_w = int(h * target); left = (w - new_w) // 2
+        new_w = int(h * target)
+        left = (w - new_w) // 2
         img = img.crop((left, 0, left + new_w, h))
     else:
-        new_h = int(w / target); top = (h - new_h) // 2
+        new_h = int(w / target)
+        top = (h - new_h) // 2
         img = img.crop((0, top, w, top + new_h))
     img = img.resize((1200, 628))
-    buf = BytesIO(); img.save(buf, format="PNG", optimize=True)
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 def process_square_image(data: bytes) -> bytes:
     img = Image.open(BytesIO(data)).convert("RGB")
-    w, h = img.size; m = min(w, h)
+    w, h = img.size
+    m = min(w, h)
     left, top = (w - m)//2, (h - m)//2
     img = img.crop((left, top, left + m, top + m)).resize((1200, 1200))
-    buf = BytesIO(); img.save(buf, format="PNG", optimize=True)
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
-def extract_video_thumbnail(data: bytes, size=(1200,628)) -> bytes:
+def extract_video_thumbnail(data: bytes, size=(1200, 628)) -> bytes:
     vid = f"/tmp/{uuid.uuid4().hex}.mp4"
     thumb = f"/tmp/{uuid.uuid4().hex}.png"
     with open(vid, "wb") as f:
@@ -102,13 +108,12 @@ def extract_video_thumbnail(data: bytes, size=(1200,628)) -> bytes:
             ["ffmpeg", "-y", "-i", vid,
              "-vf", f"select=eq(n\\,0),scale={size[0]}:{size[1]}",
              "-frames:v", "1", thumb],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True
         )
         with open(thumb, "rb") as f:
             img = f.read()
-    except FileNotFoundError:
-        logging.error("FFmpeg não encontrado no PATH.")
-        raise HTTPException(500, "FFmpeg não está instalado no servidor")
     except subprocess.CalledProcessError as e:
         logging.error(e.stderr.decode(errors="ignore"))
         raise HTTPException(500, "Falha ao extrair thumbnail de vídeo")
@@ -169,7 +174,7 @@ async def sanitize_body(request: Request, call_next):
     txt = body.decode("utf-8", errors="ignore")
     txt = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', txt, flags=re.DOTALL)
     modified = txt.encode("utf-8")
-    async def recv(): return {"type":"http.request","body":modified}
+    async def recv(): return {"type": "http.request", "body": modified}
     request._receive = recv
     return await call_next(request)
 
@@ -197,11 +202,11 @@ class CampaignRequest(BaseModel):
 
     @field_validator("budget", mode="before")
     def to_int_budget(cls, v):
-        return int(float(v.replace("$","").strip())) if isinstance(v,str) else v
+        return int(float(v.replace("$","").strip())) if isinstance(v, str) else v
 
     @field_validator("audience_min_age","audience_max_age",mode="before")
     def to_int_age(cls, v):
-        return int(v) if isinstance(v,str) else v
+        return int(v) if isinstance(v, str) else v
 
     @field_validator("cover_photo", mode="before")
     def clean_url(cls, v):
@@ -212,7 +217,7 @@ class CampaignRequest(BaseModel):
             return u
         return v
 
-# ——— Criação dos recursos de campanha ———
+# ——— Criação de recursos de campanha ———
 def create_campaign_budget(client: GoogleAdsClient, cid: str, total: int, start: str, end: str) -> str:
     days = days_between(start, end)
     daily = total / days
@@ -305,7 +310,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, cid: str, camp_res: str, d
     svc = client.get_service("CampaignCriterionService")
     ops = []
     g = data.audience_gender.upper()
-    if g in ("MALE","FEMALE"):
+    if g in ("MALE", "FEMALE"):
         excludes = ["FEMALE","UNDETERMINED"] if g=="MALE" else ["MALE","UNDETERMINED"]
         for ex in excludes:
             op  = client.get_type("CampaignCriterionOperation")
@@ -364,7 +369,7 @@ async def health_check():
     return JSONResponse({"status": "ok"}, status_code=200)
 
 if __name__ == "__main__":
-    import uvicorn, shutil
+    import uvicorn
     port = int(os.environ.get("PORT", 8000))
     logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
