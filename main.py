@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# CORS (em produção, restrinja as origens)
+# CORS para teste (em produção, restrinja origens)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -251,10 +251,151 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_tot
     resp = svc.mutate_campaign_budgets(customer_id=customer_id, operations=[op])
     return resp.results[0].resource_name
 
-# ——— Resto das funções de criação de campanha, ad groups, ads, targeting etc. ———
-# (mantenha o mesmo conteúdo que você já tinha implementado para create_campaign_resource,
-# create_ad_group, create_ad_group_keywords, create_responsive_display_ad,
-# apply_targeting_criteria e o endpoint /create_campaign)
+# ——— Criação de Campaign ———
+def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_resource_name: str, data: CampaignRequest) -> str:
+    svc = client.get_service("CampaignService")
+    op = client.get_type("CampaignOperation")
+    camp = op.create
+    camp.name = f"{data.campaign_name.strip()}_{uuid.uuid4().hex[:6]}"
+    camp.advertising_channel_type = (
+        client.enums.AdvertisingChannelTypeEnum.DISPLAY
+        if data.campaign_type.upper() == "DISPLAY"
+        else client.enums.AdvertisingChannelTypeEnum.SEARCH
+    )
+    camp.status = client.enums.CampaignStatusEnum.ENABLED
+    camp.campaign_budget = budget_resource_name
+    camp.start_date = format_date(data.start_date)
+    camp.end_date = format_date(data.end_date)
+    camp.manual_cpc = client.get_type("ManualCpc")
+    resp = svc.mutate_campaigns(customer_id=customer_id, operations=[op])
+    return resp.results[0].resource_name
+
+# ——— Criação de AdGroup ———
+def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest) -> str:
+    svc = client.get_service("AdGroupService")
+    op = client.get_type("AdGroupOperation")
+    ag = op.create
+    ag.name = f"{data.campaign_name.strip()}_AdGroup_{uuid.uuid4().hex[:6]}"
+    ag.campaign = campaign_resource_name
+    ag.status = client.enums.AdGroupStatusEnum.ENABLED
+    ag.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
+    ag.cpc_bid_micros = 1_000_000
+    resp = svc.mutate_ad_groups(customer_id=customer_id, operations=[op])
+    return resp.results[0].resource_name
+
+# ——— Criação de Keywords ———
+def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest):
+    svc = client.get_service("AdGroupCriterionService")
+    ops = []
+    for text in (data.keyword1, data.keyword2, data.keyword3):
+        if text:
+            op = client.get_type("AdGroupCriterionOperation")
+            crit = op.create
+            crit.ad_group = ad_group_resource_name
+            crit.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
+            crit.keyword.text = text
+            crit.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
+            ops.append(op)
+    if ops:
+        svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
+
+# ——— Criação de Responsive Display Ad ———
+def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest) -> str:
+    svc = client.get_service("AdGroupAdService")
+    op = client.get_type("AdGroupAdOperation")
+    ada = op.create
+    ada.ad_group = ad_group_resource_name
+    ada.status = client.enums.AdGroupAdStatusEnum.ENABLED
+    ad = ada.ad
+    ad.final_urls.append(data.final_url)
+
+    for text in (data.keyword1 or data.campaign_name.strip(), data.keyword2, data.keyword3):
+        if text:
+            h = client.get_type("AdTextAsset")
+            h.text = text
+            ad.responsive_display_ad.headlines.append(h)
+
+    for text in (data.campaign_description, data.objective):
+        if text:
+            d = client.get_type("AdTextAsset")
+            d.text = text
+            ad.responsive_display_ad.descriptions.append(d)
+
+    ad.responsive_display_ad.business_name = data.campaign_name.strip()
+    ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
+
+    if not data.cover_photo:
+        raise Exception("O campo 'cover_photo' está vazio.")
+
+    if data.cover_photo.startswith("http"):
+        m_res = upload_image_asset(client, customer_id, data.cover_photo, process=True)
+        s_res = upload_square_image_asset(client, customer_id, data.cover_photo)
+    else:
+        m_res = s_res = data.cover_photo
+
+    img1 = client.get_type("AdImageAsset"); img1.asset = m_res
+    img2 = client.get_type("AdImageAsset"); img2.asset = s_res
+    ad.responsive_display_ad.marketing_images.append(img1)
+    ad.responsive_display_ad.square_marketing_images.append(img2)
+
+    resp = svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
+    return resp.results[0].resource_name
+
+# ——— Aplicar targeting criteria ———
+def apply_targeting_criteria(client: GoogleAdsClient, customer_id: str, campaign_resource_name: str, data: CampaignRequest):
+    svc = client.get_service("CampaignCriterionService")
+    ops = []
+    if data.audience_gender and data.audience_gender.upper() in ("MALE", "FEMALE"):
+        keep = data.audience_gender.upper()
+        exclude = ("FEMALE","UNDETERMINED") if keep == "MALE" else ("MALE","UNDETERMINED")
+        for g in exclude:
+            op = client.get_type("CampaignCriterionOperation")
+            crit = op.create
+            crit.campaign = campaign_resource_name
+            crit.gender.type_ = client.enums.GenderTypeEnum[g]
+            crit.negative = True
+            crit.status = client.enums.CampaignCriterionStatusEnum.ENABLED
+            ops.append(op)
+    if ops:
+        svc.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
+
+# ——— Health check ———
+@app.get("/")
+async def health_check():
+    return {"status": "ok"}
+
+# ——— Tarefa de background ———
+def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest):
+    try:
+        cid = get_customer_id(client)
+        budget_res = create_campaign_budget(client, cid, request_data.budget, request_data.start_date, request_data.end_date)
+        camp_res = create_campaign_resource(client, cid, budget_res, request_data)
+        ag_res = create_ad_group(client, cid, camp_res, request_data)
+        create_ad_group_keywords(client, cid, ag_res, request_data)
+        create_responsive_display_ad(client, cid, ag_res, request_data)
+        apply_targeting_criteria(client, cid, camp_res, request_data)
+        logging.info("Processamento da campanha concluído com sucesso.")
+    except Exception:
+        logging.exception("Erro durante o processamento da campanha.")
+
+# ——— Endpoint principal ———
+@app.post("/create_campaign")
+async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
+    try:
+        config = {
+            "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
+            "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
+            "client_secret": "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",
+            "refresh_token": request_data.refresh_token,
+            "use_proto_plus": True
+        }
+        client = GoogleAdsClient.load_from_dict(config)
+    except Exception as e:
+        logging.error("Erro ao inicializar o Google Ads Client.", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    background_tasks.add_task(process_campaign_task, client, request_data)
+    return {"status": "processing"}
 
 if __name__ == "__main__":
     import uvicorn
