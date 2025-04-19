@@ -6,3 +6,4 @@ requests
 Pillow
 pyyaml==6.0.2
 moviepy
+imageio-ffmpeg
