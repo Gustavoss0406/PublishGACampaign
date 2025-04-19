@@ -155,7 +155,12 @@ async def clean_body(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
     body = await request.body()
-    text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body.decode("utf-8", errors="ignore"), flags=re.DOTALL)
+    text = re.sub(
+        r'("cover_photo":\s*".+?)[\";]+\s*,',
+        r'\1",',
+        body.decode("utf-8", errors="ignore"),
+        flags=re.DOTALL
+    )
     request._receive = lambda text=text: {"type": "http.request", "body": text.encode()}
     return await call_next(request)
 
@@ -254,6 +259,10 @@ def create_ad_group_keywords(client, cid, ag_res, data: CampaignRequest):
     if ops:
         svc.mutate_ad_group_criteria(customer_id=cid, operations=ops)
 
+# ——— Helper para truncar texto nos limites da API ———
+def truncate(text: str, max_len: int) -> str:
+    return text if len(text) <= max_len else text[:max_len]
+
 def create_responsive_display_ad(client, cid, ag_res, data: CampaignRequest) -> str:
     svc = client.get_service("AdGroupAdService")
     op = client.get_type("AdGroupAdOperation")
@@ -262,26 +271,36 @@ def create_responsive_display_ad(client, cid, ag_res, data: CampaignRequest) -> 
     ada.status = client.enums.AdGroupAdStatusEnum.ENABLED
     ad = ada.ad
     ad.final_urls.append(data.final_url)
-    # headlines
+
+    # Headlines (max 30 chars)
     for txt in (data.keyword1 or data.campaign_name.strip(), data.keyword2, data.keyword3):
         if txt:
-            h = client.get_type("AdTextAsset"); h.text = txt
+            h = client.get_type("AdTextAsset")
+            h.text = truncate(txt, 30)
             ad.responsive_display_ad.headlines.append(h)
-    # descriptions
-    for txt in (data.campaign_description, data.objective):
+
+    # Descriptions (max 90 chars)
+    for txt in (data.campaign_description.replace("\n", " "), data.objective):
         if txt:
-            d = client.get_type("AdTextAsset"); d.text = txt
+            d = client.get_type("AdTextAsset")
+            d.text = truncate(txt, 90)
             ad.responsive_display_ad.descriptions.append(d)
-    ad.responsive_display_ad.business_name = data.campaign_name.strip()
-    ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
-    if not data.cover_photo:
-        raise HTTPException(400, "cover_photo não fornecida")
+
+    # Business name (max 25 chars)
+    ad.responsive_display_ad.business_name = truncate(data.campaign_name.strip(), 25)
+
+    # Long headline (max 90 chars)
+    long_head = f"{data.campaign_name.strip()} - {data.objective.strip()}"
+    ad.responsive_display_ad.long_headline.text = truncate(long_head, 90)
+
+    # Images
     main_res = upload_asset(client, cid, data.cover_photo, square=False)
     square_res = upload_asset(client, cid, data.cover_photo, square=True)
     img1 = client.get_type("AdImageAsset"); img1.asset = main_res
     img2 = client.get_type("AdImageAsset"); img2.asset = square_res
     ad.responsive_display_ad.marketing_images.append(img1)
     ad.responsive_display_ad.square_marketing_images.append(img2)
+
     return svc.mutate_ad_group_ads(customer_id=cid, operations=[op]).results[0].resource_name
 
 def apply_targeting_criteria(client, cid, camp_res, data: CampaignRequest):
@@ -353,11 +372,6 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 # ——— Mudanças realizadas ———
-# 1. Removi falha de startup por FFmpeg ausente: agora apenas WARNING.
-# 2. Adicionei import de shutil e checagem de 'ffmpeg' no PATH.
-# 3. Consolidei upload_asset para tratar cover e square numa função só.
-# 4. Sanitização do body corrigida com regex.
-# 5. extract_thumb usa subprocess.run(check=True) + tratamento de erros.
-# 6. Endpoints retornam 202 apenas se a task foi agendada.
-# 7. Tratamento de erros de autenticação devolve HTTP 401.
-# 8. Todas as funções (create_ad_group, keywords, ad, targeting) estão implementadas.
+# 1. Adicionado helper `truncate(text, max_len)` para cortar strings antes de enviar.
+# 2. Headlines truncados a 30 chars; Descriptions a 90; Business name a 25; Long headline a 90.
+# 3. Substituída a antiga `create_responsive_display_ad` pela versão com truncamento para evitar erro “TOO_LONG”.
