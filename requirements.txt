@@ -1,17 +1,17 @@
 fastapi
 uvicorn
 google-ads
-pydantic>=2.0
+pydantic
 requests
 Pillow
-pyyaml==6.0.2
+pyyaml
 
 # processamento de vídeos → MoviePy
-moviepy>=2.0.0
-imageio>=2.31.1
-imageio-ffmpeg>=0.4.8
+moviepy
+imageio
+imageio-ffmpeg
 
 # dependências do MoviePy
-numpy>=1.23.0
-decorator>=5.1.1
-tqdm>=4.65.0
+numpy
+decorator
+tqdm
