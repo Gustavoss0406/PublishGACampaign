@@ -232,7 +232,7 @@ async def create_campaign_endpoint(r: CampaignRequest, bg: BackgroundTasks):
     try:
         cfg = {
             "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
-            "client_id":      "167266694231-…apps.googleusercontent.com",
+            "client_id":      "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
             "client_secret":  "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",
             "refresh_token":  r.refresh_token,
             "use_proto_plus": True,
