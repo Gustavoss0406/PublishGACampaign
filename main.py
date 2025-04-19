@@ -69,12 +69,9 @@ def days_between(a: str, b: str) -> int:
         raise HTTPException(400, "Intervalo de datas inválido")
 
 # ——— Emoji and symbol removal ———
-# pattern to remove most emoji/symbol codepoints
 _emoji_pattern = re.compile(
-    "[\U0001F300-\U0001F6FF"  # symbols & pictographs
-    "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
-    "\U0001F1E0-\U0001F1FF"  # flags
-    "]+", flags=re.UNICODE
+    "[\U0001F300-\U0001F6FF\U0001F900-\U0001F9FF\U0001F1E0-\U0001F1FF]+",
+    flags=re.UNICODE
 )
 def remove_emojis(text: str) -> str:
     return _emoji_pattern.sub("", text)
@@ -219,7 +216,7 @@ class CampaignRequest(BaseModel):
             return u
         return v
 
-# ——— Criação de campanha e recursos ———
+# ——— Criação de recursos de campanha ———
 def create_campaign_budget(client, cid, total, start, end) -> str:
     days = days_between(start, end)
     unit = 10_000
@@ -258,8 +255,8 @@ def create_ad_group(client, cid, camp_res, data: CampaignRequest) -> str:
     ag.status = client.enums.AdGroupStatusEnum.ENABLED
     ag.type_ = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
     ag.cpc_bid_micros = 1_000_000
-    return svc.mutate_ad_groups(customer_id=cid, operations=[op]).results
-
+    # CORREÇÃO: retornar o resource_name, não a lista
+    return svc.mutate_ad_groups(customer_id=cid, operations=[op]).results[0].resource_name
 
 def create_ad_group_keywords(client, cid, ag_res, data: CampaignRequest):
     svc = client.get_service("AdGroupCriterionService")
@@ -276,6 +273,7 @@ def create_ad_group_keywords(client, cid, ag_res, data: CampaignRequest):
     if ops:
         svc.mutate_ad_group_criteria(customer_id=cid, operations=ops)
 
+# ——— Resposta de anúncio adaptável ———
 def create_responsive_display_ad(client, cid, ag_res, data: CampaignRequest) -> str:
     svc = client.get_service("AdGroupAdService")
     op = client.get_type("AdGroupAdOperation")
@@ -285,7 +283,7 @@ def create_responsive_display_ad(client, cid, ag_res, data: CampaignRequest) -> 
     ad = ada.ad
     ad.final_urls.append(data.final_url)
 
-    # Headlines (30 chars), remove emojis
+    # Headlines (30 chars), sem emojis
     for txt in (data.keyword1 or data.campaign_name.strip(), data.keyword2, data.keyword3):
         if txt:
             clean = remove_emojis(txt)
@@ -293,7 +291,7 @@ def create_responsive_display_ad(client, cid, ag_res, data: CampaignRequest) -> 
             h.text = truncate(clean, 30)
             ad.responsive_display_ad.headlines.append(h)
 
-    # Descriptions (90 chars), remove emojis
+    # Descriptions (90 chars), sem emojis
     for txt in (data.campaign_description.replace("\n", " "), data.objective):
         if txt:
             clean = remove_emojis(txt)
@@ -301,15 +299,15 @@ def create_responsive_display_ad(client, cid, ag_res, data: CampaignRequest) -> 
             d.text = truncate(clean, 90)
             ad.responsive_display_ad.descriptions.append(d)
 
-    # Business name (25 chars), remove emojis
+    # Business name (25 chars), sem emojis
     bn = remove_emojis(data.campaign_name.strip())
     ad.responsive_display_ad.business_name = truncate(bn, 25)
 
-    # Long headline (90 chars), remove emojis
+    # Long headline (90 chars), sem emojis
     long_h = remove_emojis(f"{data.campaign_name.strip()} - {data.objective.strip()}")
     ad.responsive_display_ad.long_headline.text = truncate(long_h, 90)
 
-    # Images
+    # Imagens
     main_res = upload_asset(client, cid, data.cover_photo, square=False)
     square_res = upload_asset(client, cid, data.cover_photo, square=True)
     img1 = client.get_type("AdImageAsset"); img1.asset = main_res
@@ -336,7 +334,7 @@ def apply_targeting_criteria(client, cid, camp_res, data: CampaignRequest):
     if ops:
         svc.mutate_campaign_criteria(customer_id=cid, operations=ops)
 
-# ——— Background task ———
+# ——— Processamento em background ———
 def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
     try:
         cid = get_cid(client)
@@ -386,3 +384,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+# ——— Mudança crítica ———
+# - Corrigi create_ad_group() para retornar .results[0].resource_name em vez de lista, evitando TypeError ao atribuir ad_group.
