@@ -3,7 +3,7 @@ import sys
 import uuid
 import os
 import re
-import asyncio
+import subprocess
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from datetime import datetime
@@ -11,11 +11,9 @@ from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, ConfigDict
 from google.ads.googleads.client import GoogleAdsClient
-from google.ads.googleads.errors import GoogleAdsException
 import requests
 from PIL import Image, ImageOps
 from io import BytesIO
-from moviepy.editor import VideoFileClip  # para extrair frames de vídeo
 
 # Configuração de logs detalhados
 logging.basicConfig(
@@ -55,7 +53,7 @@ def days_between(start_date: str, end_date: str) -> int:
         dt_start = datetime.strptime(start_date, "%m/%d/%Y")
         dt_end = datetime.strptime(end_date, "%m/%d/%Y")
         delta = dt_end - dt_start
-        return delta.days + 1  # inclui dia final
+        return delta.days + 1
     except Exception as e:
         logging.error(f"Erro ao calcular intervalo entre '{start_date}' e '{end_date}': {e}")
         raise
@@ -90,22 +88,36 @@ def process_square_image(image_data: bytes) -> bytes:
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
-def extract_video_thumbnail(video_bytes: bytes, size: tuple[int, int] = (1200, 628)) -> bytes:
-    """Extrai o primeiro frame de arquivos de vídeo (.mp4, .mov, etc.)"""
-    tmp_path = f"/tmp/{uuid.uuid4().hex}.mp4"
-    with open(tmp_path, "wb") as f:
+def extract_video_thumbnail(video_bytes: bytes, size: tuple[int,int] = (1200, 628)) -> bytes:
+    """
+    Extrai o primeiro frame de um arquivo de vídeo usando ffmpeg CLI.
+    Requer que o binário `ffmpeg` esteja instalado no sistema.
+    """
+    vid_path = f"/tmp/{uuid.uuid4().hex}.mp4"
+    img_path = f"/tmp/{uuid.uuid4().hex}.png"
+    with open(vid_path, "wb") as f:
         f.write(video_bytes)
-    clip = VideoFileClip(tmp_path)
-    frame = clip.get_frame(0)
-    clip.reader.close()
-    if clip.audio:
-        clip.audio.reader.close_proc()
-    img = Image.fromarray(frame)
-    img = ImageOps.fit(img, size, method=Image.ANTIALIAS, centering=(0.5, 0.5))
-    buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    os.remove(tmp_path)
-    return buf.getvalue()
+
+    # Comando ffmpeg: pega o primeiro frame e redimensiona
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", vid_path,
+        "-vf", f"select=eq(n\,0),scale={size[0]}:{size[1]}",
+        "-frames:v", "1",
+        img_path
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        logging.error(f"ffmpeg error: {result.stderr.decode()}")
+        os.remove(vid_path)
+        raise Exception("Falha ao extrair thumbnail de vídeo com ffmpeg")
+
+    with open(img_path, "rb") as f:
+        data = f.read()
+
+    os.remove(vid_path)
+    os.remove(img_path)
+    return data
 
 # ——— Upload de assets para Google Ads ———
 def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str, process: bool = False) -> str:
@@ -115,7 +127,7 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, image_url: str
         raise Exception(f"Falha no download ({resp.status_code})")
     raw = resp.content
 
-    # somente vídeos: extração de thumbnail
+    # se for vídeo (.mp4 ou .mov), extrai thumbnail
     if image_url.lower().endswith((".mp4", ".mov")):
         image_data = extract_video_thumbnail(raw, size=(1200, 628))
     else:
@@ -172,13 +184,14 @@ async def preprocess_request_body(request: Request, call_next):
         return await call_next(request)
     logging.info(f"Recebendo {request.method} {request.url}")
     body_bytes = await request.body()
-    try:
-        body_text = body_bytes.decode("utf-8")
-    except:
-        body_text = str(body_bytes)
+    body_text = body_bytes.decode("utf-8", errors="ignore")
     logging.info(f"Request body raw: {body_text}")
-    # limpeza simples de cover_photo
-    body_text = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', body_text, flags=re.DOTALL)
+    body_text = re.sub(
+        r'("cover_photo":\s*".+?)[\";]+\s*,',
+        r'\1",',
+        body_text,
+        flags=re.DOTALL
+    )
     modified = body_text.encode("utf-8")
     async def receive():
         return {"type": "http.request", "body": modified}
@@ -237,7 +250,6 @@ def create_campaign_budget(client: GoogleAdsClient, customer_id: str, budget_tot
     daily = budget_total / days
     minimum_unit = 10_000
     micros = round(daily * 1_000_000 / minimum_unit) * minimum_unit
-    logging.info(f"Budget diário: {daily} R$, {micros} micros")
     svc = client.get_service("CampaignBudgetService")
     op = client.get_type("CampaignBudgetOperation")
     budget = op.create
@@ -253,10 +265,11 @@ def create_campaign_resource(client: GoogleAdsClient, customer_id: str, budget_r
     op = client.get_type("CampaignOperation")
     camp = op.create
     camp.name = f"{data.campaign_name.strip()}_{uuid.uuid4().hex[:6]}"
-    if data.campaign_type.upper() == "DISPLAY":
-        camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.DISPLAY
-    else:
-        camp.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
+    camp.advertising_channel_type = (
+        client.enums.AdvertisingChannelTypeEnum.DISPLAY
+        if data.campaign_type.upper() == "DISPLAY"
+        else client.enums.AdvertisingChannelTypeEnum.SEARCH
+    )
     camp.status = client.enums.CampaignStatusEnum.ENABLED
     camp.campaign_budget = budget_resource_name
     camp.start_date = format_date(data.start_date)
@@ -282,17 +295,15 @@ def create_ad_group(client: GoogleAdsClient, customer_id: str, campaign_resource
 def create_ad_group_keywords(client: GoogleAdsClient, customer_id: str, ad_group_resource_name: str, data: CampaignRequest):
     svc = client.get_service("AdGroupCriterionService")
     ops = []
-    def mk(kw):
-        op = client.get_type("AdGroupCriterionOperation")
-        crit = op.create
-        crit.ad_group = ad_group_resource_name
-        crit.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
-        crit.keyword.text = kw
-        crit.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
-        return op
-    for kw in (data.keyword1, data.keyword2, data.keyword3):
-        if kw:
-            ops.append(mk(kw))
+    for text in (data.keyword1, data.keyword2, data.keyword3):
+        if text:
+            op = client.get_type("AdGroupCriterionOperation")
+            crit = op.create
+            crit.ad_group = ad_group_resource_name
+            crit.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
+            crit.keyword.text = text
+            crit.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
+            ops.append(op)
     if ops:
         svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
 
@@ -306,15 +317,12 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad = ada.ad
     ad.final_urls.append(data.final_url)
 
-    # headlines
-    for text in (data.keyword1 or data.campaign_name.strip(),
-                 data.keyword2, data.keyword3):
+    for text in (data.keyword1 or data.campaign_name.strip(), data.keyword2, data.keyword3):
         if text:
             h = client.get_type("AdTextAsset")
             h.text = text
             ad.responsive_display_ad.headlines.append(h)
 
-    # descriptions
     for text in (data.campaign_description, data.objective):
         if text:
             d = client.get_type("AdTextAsset")
@@ -324,19 +332,19 @@ def create_responsive_display_ad(client: GoogleAdsClient, customer_id: str, ad_g
     ad.responsive_display_ad.business_name = data.campaign_name.strip()
     ad.responsive_display_ad.long_headline.text = f"{data.campaign_name.strip()} - {data.objective.strip()}"
 
-    if data.cover_photo:
-        if data.cover_photo.startswith("http"):
-            m_res = upload_image_asset(client, customer_id, data.cover_photo, process=True)
-            s_res = upload_square_image_asset(client, customer_id, data.cover_photo)
-        else:
-            m_res = data.cover_photo
-            s_res = data.cover_photo
-        img1 = client.get_type("AdImageAsset"); img1.asset = m_res
-        img2 = client.get_type("AdImageAsset"); img2.asset = s_res
-        ad.responsive_display_ad.marketing_images.append(img1)
-        ad.responsive_display_ad.square_marketing_images.append(img2)
-    else:
+    if not data.cover_photo:
         raise Exception("O campo 'cover_photo' está vazio.")
+
+    if data.cover_photo.startswith("http"):
+        m_res = upload_image_asset(client, customer_id, data.cover_photo, process=True)
+        s_res = upload_square_image_asset(client, customer_id, data.cover_photo)
+    else:
+        m_res = s_res = data.cover_photo
+
+    img1 = client.get_type("AdImageAsset"); img1.asset = m_res
+    img2 = client.get_type("AdImageAsset"); img2.asset = s_res
+    ad.responsive_display_ad.marketing_images.append(img1)
+    ad.responsive_display_ad.square_marketing_images.append(img2)
 
     resp = svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
     return resp.results[0].resource_name
@@ -368,7 +376,6 @@ async def health_check():
 def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest):
     try:
         cid = get_customer_id(client)
-        logging.info(f"Customer ID: {cid}")
         budget_res = create_campaign_budget(client, cid, request_data.budget, request_data.start_date, request_data.end_date)
         camp_res = create_campaign_resource(client, cid, budget_res, request_data)
         ag_res = create_ad_group(client, cid, camp_res, request_data)
@@ -383,15 +390,14 @@ def process_campaign_task(client: GoogleAdsClient, request_data: CampaignRequest
 @app.post("/create_campaign")
 async def create_campaign(request_data: CampaignRequest, background_tasks: BackgroundTasks):
     try:
-        config_dict = {
+        config = {
             "developer_token": "D4yv61IQ8R0JaE5dxrd1Uw",
             "client_id": "167266694231-g7hvta57r99etbp3sos3jfi7q7h4ef44.apps.googleusercontent.com",
             "client_secret": "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",
             "refresh_token": request_data.refresh_token,
             "use_proto_plus": True
         }
-        logging.info("Inicializando Google Ads Client.")
-        client = GoogleAdsClient.load_from_dict(config_dict)
+        client = GoogleAdsClient.load_from_dict(config)
     except Exception as e:
         logging.error("Erro ao inicializar o Google Ads Client.", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
@@ -402,5 +408,4 @@ async def create_campaign(request_data: CampaignRequest, background_tasks: Backg
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    logging.info(f"Iniciando uvicorn em 0.0.0.0:{port}.")
     uvicorn.run(app, host="0.0.0.0", port=port)
