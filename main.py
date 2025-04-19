@@ -25,7 +25,6 @@ logging.basicConfig(
     stream=sys.stdout,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
-# Suprime logs muito verbosos do PIL
 logging.getLogger("PIL").setLevel(logging.INFO)
 
 # ——— FastAPI setup ———
@@ -38,7 +37,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # em produção, restrinja
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,7 +57,7 @@ def days_between(start: str, end: str) -> int:
         d1 = datetime.strptime(end,   "%m/%d/%Y")
         diff = (d1 - d0).days + 1
         if diff <= 0:
-            raise ValueError("end_date deve ser após start_date")
+            raise ValueError()
         return diff
     except HTTPException:
         raise
@@ -72,60 +71,53 @@ def process_cover_photo(data: bytes) -> bytes:
     target = 1.91
     ratio = w / h
     if ratio > target:
-        new_w = int(h * target)
-        left = (w - new_w) // 2
+        new_w = int(h * target); left = (w - new_w) // 2
         img = img.crop((left, 0, left + new_w, h))
     else:
-        new_h = int(w / target)
-        top = (h - new_h) // 2
+        new_h = int(w / target); top = (h - new_h) // 2
         img = img.crop((0, top, w, top + new_h))
     img = img.resize((1200, 628))
-    buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
+    buf = BytesIO(); img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 def process_square_image(data: bytes) -> bytes:
     img = Image.open(BytesIO(data)).convert("RGB")
-    w, h = img.size
-    m = min(w, h)
+    w, h = img.size; m = min(w, h)
     left, top = (w - m)//2, (h - m)//2
-    img = img.crop((left, top, left + m, top + m))
-    img = img.resize((1200, 1200))
-    buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
+    img = img.crop((left, top, left + m, top + m)).resize((1200, 1200))
+    buf = BytesIO(); img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
-def extract_video_thumbnail(data: bytes, size: tuple[int,int] = (1200, 628)) -> bytes:
-    vid_path = f"/tmp/{uuid.uuid4().hex}.mp4"
-    img_path = f"/tmp/{uuid.uuid4().hex}.png"
-    with open(vid_path, "wb") as f:
-        f.write(data)
+def extract_video_thumbnail(data: bytes, size=(1200,628)) -> bytes:
+    vid = f"/tmp/{uuid.uuid4().hex}.mp4"
+    thumb = f"/tmp/{uuid.uuid4().hex}.png"
+    with open(vid, "wb") as f: f.write(data)
     try:
-        cmd = [
-            "ffmpeg", "-y", "-i", vid_path,
+        subprocess.run([
+            "ffmpeg", "-y", "-i", vid,
             "-vf", f"select=eq(n\\,0),scale={size[0]}:{size[1]}",
-            "-frames:v", "1", img_path
-        ]
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        with open(img_path, "rb") as f:
-            thumb = f.read()
+            "-frames:v", "1", thumb
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        with open(thumb, "rb") as f: img = f.read()
     except subprocess.CalledProcessError as e:
-        logging.error(f"ffmpeg error: {e.stderr.decode(errors='ignore')}")
+        logging.error(e.stderr.decode(errors="ignore"))
         raise HTTPException(500, "Falha ao extrair thumbnail de vídeo")
     finally:
-        if os.path.exists(vid_path):
-            os.remove(vid_path)
-        if os.path.exists(img_path):
-            os.remove(img_path)
-    return thumb
+        if os.path.exists(vid): os.remove(vid)
+        if os.path.exists(thumb): os.remove(thumb)
+    return img
 
-# ——— Upload de assets ———
-def upload_image_asset(client: GoogleAdsClient, customer_id: str, url: str, process: bool = False) -> str:
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise HTTPException(400, f"Download falhou ({r.status_code})")
-    raw = r.content
-    if url.lower().endswith((".mp4", ".mov")):
+# ——— Helpers de asset upload ———
+def is_video_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return any(path.endswith(ext) for ext in (".mp4", ".mov"))
+
+def upload_image_asset(client: GoogleAdsClient, customer_id: str, url: str, process: bool=False) -> str:
+    resp = requests.get(url)
+    if resp.status_code != 200:
+        raise HTTPException(400, f"Download falhou ({resp.status_code})")
+    raw = resp.content
+    if is_video_url(url):
         img = extract_video_thumbnail(raw, (1200, 628))
     else:
         img = process_cover_photo(raw) if process else raw
@@ -135,15 +127,15 @@ def upload_image_asset(client: GoogleAdsClient, customer_id: str, url: str, proc
     a.name             = f"Image_asset_{uuid.uuid4().hex}"
     a.type_            = client.enums.AssetTypeEnum.IMAGE
     a.image_asset.data = img
-    resp = svc.mutate_assets(customer_id=customer_id, operations=[op])
-    return resp.results[0].resource_name
+    res = svc.mutate_assets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
 def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, url: str) -> str:
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise HTTPException(400, f"Download falhou ({r.status_code})")
-    raw = r.content
-    if url.lower().endswith((".mp4", ".mov")):
+    resp = requests.get(url)
+    if resp.status_code != 200:
+        raise HTTPException(400, f"Download falhou ({resp.status_code})")
+    raw = resp.content
+    if is_video_url(url):
         img = extract_video_thumbnail(raw, (1200, 1200))
     else:
         img = process_square_image(raw)
@@ -153,10 +145,10 @@ def upload_square_image_asset(client: GoogleAdsClient, customer_id: str, url: st
     a.name             = f"Square_Image_asset_{uuid.uuid4().hex}"
     a.type_            = client.enums.AssetTypeEnum.IMAGE
     a.image_asset.data = img
-    resp = svc.mutate_assets(customer_id=customer_id, operations=[op])
-    return resp.results[0].resource_name
+    res = svc.mutate_assets(customer_id=customer_id, operations=[op])
+    return res.results[0].resource_name
 
-# ——— Cliente Google Ads ———
+# ——— Google Ads cliente helper ———
 def get_customer_id(client: GoogleAdsClient) -> str:
     svc = client.get_service("CustomerService")
     custs = svc.list_accessible_customers()
@@ -167,14 +159,13 @@ def get_customer_id(client: GoogleAdsClient) -> str:
 # ——— Middleware para sanitizar body ———
 @app.middleware("http")
 async def sanitize_body(request: Request, call_next):
-    if request.method == "OPTIONS":
+    if request.method.upper() == "OPTIONS":
         return await call_next(request)
     body = await request.body()
     txt = body.decode("utf-8", errors="ignore")
     txt = re.sub(r'("cover_photo":\s*".+?)[\";]+\s*,', r'\1",', txt, flags=re.DOTALL)
     modified = txt.encode("utf-8")
-    async def recv():
-        return {"type": "http.request", "body": modified}
+    async def recv(): return {"type":"http.request","body":modified}
     request._receive = recv
     return await call_next(request)
 
@@ -202,13 +193,11 @@ class CampaignRequest(BaseModel):
 
     @field_validator("budget", mode="before")
     def to_int_budget(cls, v):
-        if isinstance(v, str):
-            return int(float(v.replace("$", "").strip()))
-        return v
+        return int(float(v.replace("$","").strip())) if isinstance(v,str) else v
 
-    @field_validator("audience_min_age", "audience_max_age", mode="before")
+    @field_validator("audience_min_age","audience_max_age",mode="before")
     def to_int_age(cls, v):
-        return int(v) if isinstance(v, str) else v
+        return int(v) if isinstance(v,str) else v
 
     @field_validator("cover_photo", mode="before")
     def clean_url(cls, v):
@@ -220,7 +209,7 @@ class CampaignRequest(BaseModel):
         return v
 
 # ——— Criação dos recursos de campanha ———
-def create_campaign_budget(client: GoogleAdsClient, cust_id: str, total: int, start: str, end: str) -> str:
+def create_campaign_budget(client: GoogleAdsClient, cid: str, total: int, start: str, end: str) -> str:
     days = days_between(start, end)
     daily = total / days
     unit  = 10_000
@@ -231,28 +220,28 @@ def create_campaign_budget(client: GoogleAdsClient, cust_id: str, total: int, st
     b.name            = f"Budget_{uuid.uuid4().hex}"
     b.amount_micros   = micros
     b.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
-    resp = svc.mutate_campaign_budgets(customer_id=cust_id, operations=[op])
+    resp = svc.mutate_campaign_budgets(customer_id=cid, operations=[op])
     return resp.results[0].resource_name
 
-def create_campaign_resource(client: GoogleAdsClient, cust_id: str, budget_res: str, data: CampaignRequest) -> str:
+def create_campaign_resource(client: GoogleAdsClient, cid: str, budget_res: str, data: CampaignRequest) -> str:
     svc = client.get_service("CampaignService")
     op  = client.get_type("CampaignOperation")
     c   = op.create
     c.name                     = f"{data.campaign_name.strip()}_{uuid.uuid4().hex[:6]}"
     c.advertising_channel_type = (
         client.enums.AdvertisingChannelTypeEnum.DISPLAY
-        if data.campaign_type.upper() == "DISPLAY"
+        if data.campaign_type.upper()=="DISPLAY"
         else client.enums.AdvertisingChannelTypeEnum.SEARCH
     )
-    c.status        = client.enums.CampaignStatusEnum.ENABLED
-    c.campaign_budget = budget_res
-    c.start_date    = format_date(data.start_date)
-    c.end_date      = format_date(data.end_date)
-    c.manual_cpc    = client.get_type("ManualCpc")
-    resp = svc.mutate_campaigns(customer_id=cust_id, operations=[op])
+    c.status         = client.enums.CampaignStatusEnum.ENABLED
+    c.campaign_budget= budget_res
+    c.start_date     = format_date(data.start_date)
+    c.end_date       = format_date(data.end_date)
+    c.manual_cpc     = client.get_type("ManualCpc")
+    resp = svc.mutate_campaigns(customer_id=cid, operations=[op])
     return resp.results[0].resource_name
 
-def create_ad_group(client: GoogleAdsClient, cust_id: str, camp_res: str, data: CampaignRequest) -> str:
+def create_ad_group(client: GoogleAdsClient, cid: str, camp_res: str, data: CampaignRequest) -> str:
     svc = client.get_service("AdGroupService")
     op  = client.get_type("AdGroupOperation")
     ag  = op.create
@@ -261,10 +250,10 @@ def create_ad_group(client: GoogleAdsClient, cust_id: str, camp_res: str, data: 
     ag.status         = client.enums.AdGroupStatusEnum.ENABLED
     ag.type_          = client.enums.AdGroupTypeEnum.DISPLAY_STANDARD
     ag.cpc_bid_micros = 1_000_000
-    resp = svc.mutate_ad_groups(customer_id=cust_id, operations=[op])
+    resp = svc.mutate_ad_groups(customer_id=cid, operations=[op])
     return resp.results[0].resource_name
 
-def create_ad_group_keywords(client: GoogleAdsClient, cust_id: str, ag_res: str, data: CampaignRequest):
+def create_ad_group_keywords(client: GoogleAdsClient, cid: str, ag_res: str, data: CampaignRequest):
     svc = client.get_service("AdGroupCriterionService")
     ops = []
     for kw in (data.keyword1, data.keyword2, data.keyword3):
@@ -277,9 +266,9 @@ def create_ad_group_keywords(client: GoogleAdsClient, cust_id: str, ag_res: str,
             crt.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
             ops.append(op)
     if ops:
-        svc.mutate_ad_group_criteria(customer_id=cust_id, operations=ops)
+        svc.mutate_ad_group_criteria(customer_id=cid, operations=ops)
 
-def create_responsive_display_ad(client: GoogleAdsClient, cust_id: str, ag_res: str, data: CampaignRequest) -> str:
+def create_responsive_display_ad(client: GoogleAdsClient, cid: str, ag_res: str, data: CampaignRequest) -> str:
     svc = client.get_service("AdGroupAdService")
     op  = client.get_type("AdGroupAdOperation")
     ada = op.create
@@ -300,23 +289,23 @@ def create_responsive_display_ad(client: GoogleAdsClient, cust_id: str, ag_res: 
     if not data.cover_photo:
         raise HTTPException(400, "cover_photo não fornecida")
     if data.cover_photo.startswith("http"):
-        main_res   = upload_image_asset(client, cust_id, data.cover_photo, process=True)
-        square_res = upload_square_image_asset(client, cust_id, data.cover_photo)
+        main_res   = upload_image_asset(client, cid, data.cover_photo, process=True)
+        square_res = upload_square_image_asset(client, cid, data.cover_photo)
     else:
         main_res = square_res = data.cover_photo
     img1 = client.get_type("AdImageAsset"); img1.asset = main_res
     img2 = client.get_type("AdImageAsset"); img2.asset = square_res
     ad.responsive_display_ad.marketing_images.append(img1)
     ad.responsive_display_ad.square_marketing_images.append(img2)
-    resp = svc.mutate_ad_group_ads(customer_id=cust_id, operations=[op])
+    resp = svc.mutate_ad_group_ads(customer_id=cid, operations=[op])
     return resp.results[0].resource_name
 
-def apply_targeting_criteria(client: GoogleAdsClient, cust_id: str, camp_res: str, data: CampaignRequest):
+def apply_targeting_criteria(client: GoogleAdsClient, cid: str, camp_res: str, data: CampaignRequest):
     svc = client.get_service("CampaignCriterionService")
     ops = []
     g = data.audience_gender.upper()
-    if g in ("MALE", "FEMALE"):
-        excludes = ["FEMALE", "UNDETERMINED"] if g == "MALE" else ["MALE", "UNDETERMINED"]
+    if g in ("MALE","FEMALE"):
+        excludes = ["FEMALE","UNDETERMINED"] if g=="MALE" else ["MALE","UNDETERMINED"]
         for ex in excludes:
             op  = client.get_type("CampaignCriterionOperation")
             crt = op.create
@@ -326,7 +315,7 @@ def apply_targeting_criteria(client: GoogleAdsClient, cust_id: str, camp_res: st
             crt.status       = client.enums.CampaignCriterionStatusEnum.ENABLED
             ops.append(op)
     if ops:
-        svc.mutate_campaign_criteria(customer_id=cust_id, operations=ops)
+        svc.mutate_campaign_criteria(customer_id=cid, operations=ops)
 
 # ——— Background task ———
 def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
@@ -340,9 +329,9 @@ def process_campaign_task(client: GoogleAdsClient, data: CampaignRequest):
         apply_targeting_criteria(client, cid, camp_id, data)
         logging.info("Campanha processada com sucesso.")
     except RefreshError:
-        logging.exception("Refresh token inválido ou expirado")
+        logging.error("Refresh token inválido ou expirado", exc_info=True)
     except GoogleAdsException as e:
-        logging.error(f"Erro Google Ads API: {e.error.code().name}", exc_info=True)
+        logging.error(f"Google Ads API error: {e.error.code().name}", exc_info=True)
     except Exception:
         logging.exception("Erro no processamento de campanha")
 
